@@ -1,0 +1,60 @@
+name: Windows release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Validate release version
+        env:
+          BUILD_REF: ${{ github.ref }}
+          BUILD_TAG: ${{ github.ref_name }}
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          if ($env:BUILD_REF.StartsWith('refs/tags/') -and $env:BUILD_TAG -ne "v$version") {
+            throw "Tag must equal v$version."
+          }
+      - name: Install pinned Inno Setup compiler
+        run: |
+          $compiler = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_0_1/innosetup-7.0.1-beta-x64.exe' -OutFile $compiler
+          $expected = 'a6033578da2c7b57ceaf9a97ebba56cb40bb71ed275170b49bbaf5eb1f4b5e16'
+          if ((Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'Inno Setup download SHA-256 mismatch.'
+          }
+          $process = Start-Process -FilePath $compiler -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed.' }
+      - name: Test, build, install, run, and uninstall
+        run: ./packaging/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DecapAdjustment-Windows-x64
+          path: |
+            outputs/*-Setup-x64.exe
+            outputs/*.sha256
+            outputs/installer-verification.json
+          if-no-files-found: error
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assets = @(Get-ChildItem outputs -File | Where-Object { $_.Name -match '(-Setup-x64\.exe|\.sha256|installer-verification\.json)$' } | ForEach-Object FullName)
+          gh release create $env:RELEASE_TAG @assets --verify-tag --title "Decap Adjustment $env:RELEASE_TAG" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }

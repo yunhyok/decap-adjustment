@@ -1,0 +1,16 @@
+# Tested on CPython 3.12.10 x64. Keep the complete build/test dependency set pinned.
+openpyxl==3.1.5
+et_xmlfile==2.0.0
+pyinstaller==6.20.0
+pyinstaller-hooks-contrib==2026.5
+altgraph==0.17.5
+packaging==26.2
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+setuptools==82.0.1
+pillow==12.2.0
+pytest==9.0.3
+iniconfig==2.3.0
+pluggy==1.6.0
+colorama==0.4.6
+pygments==2.20.0
