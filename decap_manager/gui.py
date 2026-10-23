@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, font, messagebox, simpledialog, ttk
 
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
@@ -56,7 +56,8 @@ class MappingDialog(tk.Toplevel):
     def __init__(self, parent, path, kind, initial=None):
         super().__init__(parent)
         self.title("Excel 시트 · 헤더 · 열 확인")
-        self.geometry("860x730")
+        self.geometry("1040x760")
+        self.minsize(760, 680)
         self.transient(parent)
         self.result = None
         self.path = path
@@ -91,7 +92,16 @@ class MappingDialog(tk.Toplevel):
         ttk.Label(top, text="헤더 행").pack(side="left")
         ttk.Spinbox(top, textvariable=self.header, from_=1, to=1048576, width=7).pack(side="left", padx=8)
         ttk.Button(top, text="행 미리보기", command=self.refresh).pack(side="left")
-        self.samples = table(main, [("row", "행", 45), ("cells", "열별 실제 내용", 700)], 5)
+        ttk.Label(main, text="셀 미리보기 · 열 경계를 끌어 너비 조절 / 가로 스크롤로 오른쪽 열 확인").pack(anchor="w", pady=(6, 0))
+        self.samples = table(main, [], 5)
+        self.samples.tag_configure("header", background="#e4eff8", font=("Malgun Gothic", 10, "bold"))
+        self.samples.bind("<ButtonRelease-1>", self.show_preview_cell)
+        detail = ttk.Frame(main)
+        detail.pack(fill="x")
+        self.cell_address = tk.StringVar(value="셀 선택")
+        self.cell_value = tk.StringVar()
+        ttk.Label(detail, textvariable=self.cell_address, width=9).pack(side="left")
+        ttk.Entry(detail, textvariable=self.cell_value, state="readonly").pack(side="left", fill="x", expand=True)
         form = ttk.Frame(main)
         form.pack(fill="x", pady=8)
         self.fields = {}
@@ -136,15 +146,41 @@ class MappingDialog(tk.Toplevel):
     def refresh(self):
         try:
             self.samples.delete(*self.samples.get_children())
+            self.cell_address.set("셀 선택")
+            self.cell_value.set("")
             ws = self.book[self.sheet.get()]
             if ws.max_row is None or ws.max_column is None:
                 ws.calculate_dimension(force=True)
             start = max(1, self.header.get() - 2)
-            for row_number, row in enumerate(ws.iter_rows(min_row=start, max_row=min(start + 6, ws.max_row), max_col=min(ws.max_column, 40)), start):
-                value = "  |  ".join(f"{get_column_letter(i)}: {c.value}" for i, c in enumerate(row, 1) if c.value is not None)
-                self.samples.insert("", "end", values=(row_number, value))
+            rows = [["" if value is None else str(value) for value in row] for row in ws.iter_rows(
+                min_row=start, max_row=min(start + 6, ws.max_row), max_col=ws.max_column, values_only=True)]
+            columns = [get_column_letter(i) for i in range(1, ws.max_column + 1)]
+            self.samples.configure(columns=["row", *columns])
+            self.samples.heading("row", text="행")
+            self.samples.column("row", width=52, minwidth=48, stretch=False, anchor="center")
+            cell_font = font.Font(font=ttk.Style(self).lookup("Treeview", "font") or "TkDefaultFont")
+            for index, column in enumerate(columns):
+                width = max(cell_font.measure(line) for row in rows for line in (row[index].splitlines() or [""])) if rows else 0
+                self.samples.heading(column, text=column)
+                self.samples.column(column, width=min(360, max(90, width + 28)), minwidth=60, stretch=False)
+            for row_number, values in enumerate(rows, start):
+                self.samples.insert("", "end", values=[row_number, *values],
+                                    tags=("header",) if row_number == self.header.get() else ())
+            self.samples.xview_moveto(0)
         except Exception as exc:
             messagebox.showerror("헤더 확인", str(exc), parent=self)
+
+    def show_preview_cell(self, event):
+        item = self.samples.identify_row(event.y)
+        column = self.samples.identify_column(event.x)
+        if not item or not column:
+            return
+        index = int(column[1:]) - 1
+        values = self.samples.item(item, "values")
+        if not 1 <= index < len(values):
+            return
+        self.cell_address.set(f"{get_column_letter(index)}{values[0]}")
+        self.cell_value.set(values[index])
 
     def accept(self):
         try:
