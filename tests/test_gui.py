@@ -94,3 +94,191 @@ def test_policy_only_priority_is_removed_when_disabled_or_deleted(app):
     assert target not in app.capacities
     app.preview()
     assert app.result["ok"]
+
+
+def _shortage_setup(app):
+    from copy import deepcopy
+    from decap_manager.engine import parse_capacitance
+
+    app.load_examples()
+    components = ["CAP_10NF", "CAP_100NF", "CAP_1UF", "CAP_1UF", "CAP_4U7F", "CAP_1UF"]
+    app.records = [dict(row=index + 2, refdes=f"C{index + 1}", net="OTHER" if index == 5 else "DEMO",
+                        component=component, status="Automatic" if index == 4 else "Disabled",
+                        distance=distance)
+                   for index, (component, distance) in enumerate(zip(components, [10, 20, 30, 90, 100, 200]))]
+    app.capacities = {component: parse_capacitance(component) for component in components}
+    app.reset_priority()
+    app.manual = [dict(net="DEMO", component="CAP_4U7F", expression="D+1", source="Synthetic direct command")]
+    app.mode.set("direct")
+    return deepcopy(app.records)
+
+
+def _capture_recovery_prompt(monkeypatch, answer, before_answer=None):
+    prompts = []
+    def ask(title, message, **kwargs):
+        prompts.append((title, message, kwargs))
+        if before_answer:
+            before_answer()
+        return answer
+    monkeypatch.setattr("decap_manager.gui.messagebox.askyesno", ask)
+    monkeypatch.setattr("decap_manager.gui.messagebox.showerror", lambda *args, **kwargs: None)
+    monkeypatch.setattr("decap_manager.gui.messagebox.showinfo", lambda *args, **kwargs: None)
+    return prompts
+
+
+@pytest.mark.parametrize("use_alias", [False, True])
+def test_shortage_recovery_requires_approval_and_adds_only_used_rule(app, monkeypatch, use_alias):
+    original = _shortage_setup(app)
+    if use_alias:
+        app.aliases = {"EXPLICIT_ALIAS": "CAP_4U7F"}
+        app.manual[0]["component"] = "EXPLICIT_ALIAS"
+
+    def before_approval():
+        assert app.records == original
+        assert app.policies == []
+        assert not app.use_policies.get()
+        assert "disabled" in app.save_button.state()
+
+    prompts = _capture_recovery_prompt(monkeypatch, True, before_approval)
+    app.preview()
+    assert len(prompts) == 1
+    _, proposal, options = prompts[0]
+    assert str(options.get("default", "")).lower() == "no"
+    assert all(text in proposal for text in ("CAP_1UF", "CAP_4U7F", "Disabled", "1개"))
+    assert "먼" in proposal or "D" in proposal
+    assert "보정" in proposal
+    assert "CAP_10NF" not in proposal and "CAP_100NF" not in proposal
+    assert app.policies == [dict(target="CAP_4U7F", donor="CAP_1UF", direction="D", donor_status="Disabled", compensate=False)]
+    assert app.use_policies.get()
+    assert app.result["ok"]
+    assert [(change["refdes"], change["new_component"], change["new_status"]) for change in app.result["changes"]] == [("C4", "CAP_4U7F", "Automatic")]
+    assert app.records == original
+    assert app.result["records"][-1] == original[-1]
+    assert "disabled" not in app.save_button.state()
+
+
+def test_declined_shortage_recovery_keeps_atomic_failure(app, monkeypatch):
+    original = _shortage_setup(app)
+    prompts = _capture_recovery_prompt(monkeypatch, False)
+    app.preview()
+    assert len(prompts) == 1
+    assert not app.result["ok"]
+    assert app.result["records"] == original == app.records
+    assert app.result["changes"] == []
+    assert app.policies == [] and not app.use_policies.get()
+    assert "shortage" in {issue["code"] for issue in app.result["issues"]}
+    assert "disabled" in app.save_button.state()
+
+
+@pytest.mark.parametrize("reason", ["ambiguous", "no_disabled_donor"])
+def test_unusable_recovery_does_not_offer_success(app, monkeypatch, reason):
+    from copy import deepcopy
+    _shortage_setup(app)
+    if reason == "ambiguous":
+        app.records[2]["component"] = "CAP_OTHER_1UF"
+        app.capacities["CAP_OTHER_1UF"] = 1_000_000
+    else:
+        for record in app.records:
+            if record["net"] == "DEMO" and record["component"] == "CAP_1UF":
+                record["status"] = "Automatic"
+    original = deepcopy(app.records)
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert not prompts
+    assert not app.result["ok"]
+    assert app.result["records"] == original == app.records
+    assert not app.result["changes"] and not app.policies
+    assert "disabled" in app.save_button.state()
+    guidance = app.details.get("1.0", "end")
+    assert "규칙" in guidance or "배치" in guidance
+
+
+def test_recovery_preserves_and_runs_existing_active_custom_policy(app, monkeypatch):
+    original = _shortage_setup(app)
+    custom = dict(target="CAP_10NF", donor="CAP_100NF", direction="D", donor_status="any", compensate=False)
+    app.policies = [custom.copy()]
+    app.use_policies.set(True)
+    app.manual.insert(0, dict(net="DEMO", component="CAP_10NF", expression="A+2", source="Synthetic custom rule"))
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert len(prompts) == 1
+    assert app.result["ok"]
+    assert app.policies[0] == custom and len(app.policies) == 2
+    assert app.policies[1]["target"] == "CAP_4U7F"
+    assert "CAP_10NF" not in prompts[0][1] and "CAP_100NF" not in prompts[0][1]
+    assert {change["refdes"] for change in app.result["changes"]} == {"C1", "C2", "C4"}
+    assert app.records == original
+    assert all(row["after_active"] == row["expected_active"] for row in app.result["summary"])
+    assert "disabled" not in app.save_button.state()
+
+
+def test_disabled_custom_policy_is_never_automatically_enabled(app, monkeypatch):
+    original = _shortage_setup(app)
+    custom = dict(target="CAP_10NF", donor="CAP_100NF", direction="D", donor_status="any", compensate=False)
+    app.policies = [custom.copy()]
+    app.use_policies.set(False)
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert not prompts
+    assert not app.result["ok"]
+    assert app.policies == [custom] and not app.use_policies.get()
+    assert app.result["records"] == original == app.records
+    assert "disabled" in app.save_button.state()
+    assert "규칙" in app.details.get("1.0", "end")
+
+
+def test_recovery_never_replaces_existing_target_policy(app, monkeypatch):
+    original = _shortage_setup(app)
+    custom = dict(target="CAP_4U7F", donor="CAP_100NF", direction="A", donor_status="Disabled", compensate=False)
+    app.policies = [custom.copy()]
+    app.use_policies.set(True)
+    app.manual[0]["expression"] = "D+2"
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert not prompts
+    assert not app.result["ok"]
+    assert app.policies == [custom] and app.use_policies.get()
+    assert app.result["records"] == original == app.records
+    assert not app.result["changes"]
+    assert "disabled" in app.save_button.state()
+
+
+@pytest.mark.parametrize("can_compensate", [True, False])
+def test_one_uf_recovery_checks_active_donor_compensation_before_offer(app, monkeypatch, can_compensate):
+    from copy import deepcopy
+    _shortage_setup(app)
+    app.manual[0]["component"] = "CAP_1UF"
+    for record in app.records:
+        if record["component"] == "CAP_1UF" and record["net"] == "DEMO":
+            record["status"] = "Automatic"
+    app.records.append(dict(row=8, refdes="C7", net="DEMO", component="CAP_100NF", status="Automatic", distance=120))
+    if not can_compensate:
+        app.records[1]["status"] = "Automatic"
+    original = deepcopy(app.records)
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert app.records == original
+    if not can_compensate:
+        assert not prompts and not app.result["ok"]
+        assert app.result["records"] == original and not app.result["changes"]
+        assert not app.policies and "disabled" in app.save_button.state()
+        return
+    assert len(prompts) == 1 and "보정" in prompts[0][1]
+    assert app.result["ok"] and app.policies[0]["compensate"]
+    assert [(action["kind"], action["refdes"]) for action in app.result["actions"]] == [
+        ("conversion", "C7"), ("compensation", "C2")]
+    donor_count = lambda rows: sum(row["net"] == "DEMO" and row["component"] == "CAP_100NF" and row["status"] == "Automatic" for row in rows)
+    assert donor_count(app.result["records"]) == donor_count(original) == 1
+    assert "disabled" not in app.save_button.state()
+
+
+def test_recovery_omits_commanded_rule_when_existing_positions_are_enough(app, monkeypatch):
+    original = _shortage_setup(app)
+    app.manual.insert(0, dict(net="DEMO", component="CAP_10NF", expression="A+1", source="Synthetic sufficient positions"))
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert app.result["ok"] and len(prompts) == 1
+    assert [policy["target"] for policy in app.policies] == ["CAP_4U7F"]
+    assert "CAP_10NF" not in prompts[0][1] and "CAP_100NF" not in prompts[0][1]
+    assert {change["refdes"] for change in app.result["changes"]} == {"C1", "C4"}
+    assert app.records == original

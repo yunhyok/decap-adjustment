@@ -495,7 +495,7 @@ class App(tk.Tk):
             self.policy_table.insert("", "end", values=(p["target"], p["donor"], rule))
         self.invalidate()
 
-    def suggest_policies(self):
+    def recommended_policies(self):
         by_cap = {}
         for comp, capacity in self.capacities.items():
             by_cap.setdefault(capacity, []).append(comp)
@@ -505,7 +505,10 @@ class App(tk.Tk):
                                                             (10000, 100000, "A", "Disabled", False)]:
             if len(by_cap.get(target, [])) == len(by_cap.get(donor, [])) == 1:
                 policies.append(dict(target=by_cap[target][0], donor=by_cap[donor][0], direction=direction, donor_status=status, compensate=compensate))
-        self.policies = policies
+        return policies
+
+    def suggest_policies(self):
+        self.policies = policies = self.recommended_policies()
         self.render_policies()
         messagebox.showinfo("변환 규칙", f"명확히 인식된 {len(policies)}개 규칙을 채웠습니다.\n목록을 확인한 뒤 '아래 변환 규칙 사용'을 선택하세요.\n같은 용량의 부품이 여러 종류이면 수동으로 정확한 이름을 지정하세요.", parent=self)
 
@@ -594,8 +597,9 @@ class App(tk.Tk):
             priority = [self.priority_table.item(i, "values")[0] for i in self.priority_table.get_children()]
             if not commands and not self.rearrange.get():
                 raise ValueError("증감 명령을 추가하거나 재배치를 선택하세요.")
-            self.result = compute(self.records, commands, priority=priority, policies=self.policies if self.use_policies.get() else [],
-                                  rearrange=self.rearrange.get(), selected_nets=nets, aliases=self.aliases)
+            options = dict(priority=priority, rearrange=self.rearrange.get(), selected_nets=nets, aliases=self.aliases)
+            self.result = compute(self.records, commands, policies=self.policies if self.use_policies.get() else [], **options)
+            self.offer_shortage_rules(commands, options)
             self.show_result()
         except Exception as exc:
             self.result = None
@@ -603,6 +607,47 @@ class App(tk.Tk):
             self.details.insert("end", str(exc))
             self.notice.set("입력과 설정을 확인하세요.")
             messagebox.showerror("계산할 수 없습니다", str(exc), parent=self)
+
+    def offer_shortage_rules(self, commands, options):
+        if self.result["ok"] or not any(i["code"] == "shortage" for i in self.result["issues"]):
+            return
+        self.result["issues"].append(dict(level="info", code="conversion_guidance", message=
+            "부족 수량을 확인하세요. + 명령의 부족분을 다른 부품에서 가져오려면 '3 배치 · 변환'에서 "
+            "정확한 부품명의 변환 규칙을 확인하고 '아래 변환 규칙 사용'을 켜세요. "
+            "같은 용량의 부품이 여러 종류이면 '규칙 추가'로 직접 지정해야 합니다."))
+        # Do not enable unrelated saved rules when the user has switched them off.
+        if self.policies and not self.use_policies.get():
+            return
+        targets = {self.aliases.get(c["component"], c["component"]) for c in commands}
+        configured = {p["target"] for p in self.policies}
+        suggested = [p for p in self.recommended_policies() if p["target"] in targets - configured]
+        if not suggested:
+            return
+        trial = compute(self.records, commands, policies=self.policies + suggested, **options)
+        if not trial["ok"]:
+            return
+        conversions = [a for a in trial["actions"] if a["kind"] == "conversion"]
+        needed = [p for p in suggested if any(a["new_component"] == p["target"] for a in conversions)]
+        if not needed:
+            return
+        lines = []
+        for policy in needed:
+            count = sum(a["new_component"] == policy["target"] for a in conversions)
+            status = "Disabled만" if policy["donor_status"] == "Disabled" else "Automatic / Disabled"
+            direction = "먼 자리부터" if policy["direction"] == "D" else "가까운 자리부터"
+            compensation = "원본 부품의 활성 수량 보정" if policy["compensate"] else "보정 없음"
+            lines.append(f"{policy['donor']} → {policy['target']} / Automatic: {count}개\n"
+                         f"  같은 NET · {status} · {direction} · {compensation}")
+        if messagebox.askyesno("부족분 변환 규칙 확인",
+                "현재 부품의 Disabled 자리만으로는 + 명령을 채울 수 없습니다.\n"
+                "아래 규칙을 추가하면 전체 계산과 수량 검증을 통과합니다.\n\n" + "\n\n".join(lines) +
+                "\n\n이 규칙을 켜고 미리보기를 진행할까요?\n"
+                "원본 파일은 변경하지 않으며, 결과 저장 전에 변경 목록을 확인할 수 있습니다.",
+                parent=self, default="no"):
+            self.policies.extend(needed)
+            self.use_policies.set(True)
+            self.render_policies()
+            self.result = trial
 
     def show_result(self):
         result = self.result
