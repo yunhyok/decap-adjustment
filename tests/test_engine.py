@@ -1,4 +1,5 @@
 import copy
+import random
 import unittest
 
 from decap_manager.engine import compute, parse_capacitance, parse_expression
@@ -163,11 +164,12 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(active(result, XL), 2)
         self.assertEqual(active(result, LARGE), 1)
 
-    def test_1uf_any_status_donor_and_nearest_compensation(self):
+    def test_1uf_any_status_donor_and_farthest_compensation(self):
         records = [row(1, MID), row(2, MID), row(3, LARGE, status="Automatic"), row(4, MID, status="Automatic")]
         result = compute(records, [command(LARGE)], policies=[policy(LARGE, MID, donor_status="any", compensate=True)])
         self.assertTrue(result["ok"], result["issues"])
-        self.assertEqual([(a["kind"], a["refdes"]) for a in result["actions"]], [("conversion", "C4"), ("compensation", "C1")])
+        self.assertEqual([(a["kind"], a["refdes"]) for a in result["actions"]], [("conversion", "C4"), ("compensation", "C2")])
+        self.assertEqual(result["actions"][1]["direction"], "D")
         self.assertEqual(active(result, MID), 1)
         self.assertEqual(active(result, LARGE), 2)
         self.assertTrue(all(s["after_active"] == s["expected_active"] for s in result["summary"]))
@@ -176,7 +178,7 @@ class EngineTests(unittest.TestCase):
         records = [row(1), row(2), row(3, status="Automatic"), row(4)]
         result = compute(records, [command(LARGE, "A+2")], policies=[policy(LARGE, MID, donor_status="any", compensate=True)])
         self.assertTrue(result["ok"], result["issues"])
-        self.assertEqual([(a["kind"], a["refdes"]) for a in result["actions"]], [("conversion", "C4"), ("conversion", "C3"), ("compensation", "C1")])
+        self.assertEqual([(a["kind"], a["refdes"]) for a in result["actions"]], [("conversion", "C4"), ("conversion", "C3"), ("compensation", "C2")])
         self.assertEqual(active(result, MID), 1)
         self.assertEqual(active(result, LARGE), 2)
 
@@ -203,12 +205,13 @@ class EngineTests(unittest.TestCase):
         self.assert_atomic_error(compute(records, [command(XL)]), records, "shortage")
         self.assertEqual(compute(records, [])["records"], records)
 
-    def test_uncompensated_active_donor_is_explicit_and_counted(self):
+    def test_uncompensated_active_donor_is_rejected_atomically(self):
         records = [row(1, status="Automatic")]
         result = compute(records, [command(LARGE)], policies=[policy(LARGE, MID, donor_status="any")])
-        self.assertTrue(result["ok"])
-        self.assertEqual(active(result, MID), 0)
-        self.assertIn("donor_active_reduced", {i["code"] for i in result["issues"]})
+        self.assert_atomic_error(result, records, "active_compensation_required")
+        donor_summary = next(s for s in result["summary"] if s["component"] == MID)
+        self.assertEqual(donor_summary["expected_active"], 1)
+        self.assertEqual(active(result, MID), 1)
 
     def test_compensation_preserves_previous_donor_command_target(self):
         records = [row(1), row(2), row(3), row(4, status="Automatic")]
@@ -216,6 +219,143 @@ class EngineTests(unittest.TestCase):
                          policies=[policy(LARGE, MID, donor_status="any", compensate=True)])
         self.assertTrue(result["ok"], result["issues"])
         self.assertEqual(active(result, MID), 2)
+
+    def test_farther_automatic_1uf_is_taken_before_disabled_and_compensated_farthest(self):
+        records = [row(1, LARGE), row(2, LARGE), row(3, LARGE, "Automatic")]
+        result = compute(records, [command(XL)], policies=[policy(XL, LARGE, donor_status="any", compensate=True)])
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual([(a["kind"], a["refdes"]) for a in result["actions"]], [("conversion", "C3"), ("compensation", "C2")])
+        self.assertEqual(active(result, XL), 1)
+        self.assertEqual(active(result, LARGE), 1)
+        self.assertEqual(result["records"][0], records[0])
+
+    def test_missing_physical_donor_uses_disabled_intermediate_without_active_growth(self):
+        records = [row(1), row(2)]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL)], policies=rules)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual([(a["refdes"], a["old_component"], a["new_component"], a["new_status"]) for a in result["actions"]],
+                         [("C2", MID, LARGE, "Disabled"), ("C2", LARGE, XL, "Automatic")])
+        self.assertIn("임시 Disabled", result["actions"][0]["reason"])
+        self.assertEqual(active(result, XL), 1)
+        self.assertEqual(active(result, LARGE), 0)
+        self.assertEqual(active(result, MID), 0)
+        self.assertEqual(len(result["changes"]), 1)
+
+    def test_missing_compensation_1uf_is_created_from_100nf_preserving_both(self):
+        records = [row(1), row(2, MID, "Automatic"), row(3, LARGE, "Automatic")]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL)], policies=rules)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual([(a["kind"], a["refdes"]) for a in result["actions"]],
+                         [("conversion", "C3"), ("conversion", "C2"), ("compensation", "C1")])
+        self.assertIn("연쇄 활성 수량 보정", result["actions"][1]["reason"])
+        self.assertEqual([active(result, comp) for comp in (MID, LARGE, XL)], [1, 1, 1])
+
+    def test_multilevel_physical_and_active_shortages_preserve_all_counts(self):
+        records = [row(1, SMALL), row(2, SMALL), row(3, SMALL), row(4, MID, "Automatic"), row(5, LARGE, "Automatic")]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True),
+                 policy(LARGE, MID, donor_status="any", compensate=True),
+                 policy(MID, SMALL, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL, "D+2")], policies=rules)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual([active(result, comp) for comp in (SMALL, MID, LARGE, XL)], [0, 1, 1, 2])
+        self.assertEqual([r["component"] for r in result["records"]], [SMALL, MID, LARGE, XL, XL])
+        self.assertTrue(all(s["expected_active"] == s["after_active"] for s in result["summary"]))
+        self.assertEqual([(r["row"], r["refdes"], r["net"], r["distance"]) for r in result["records"]],
+                         [(r["row"], r["refdes"], r["net"], r["distance"]) for r in records])
+        self.assertTrue(any(a["new_status"] == "Disabled" and a["kind"] == "conversion" for a in result["actions"]))
+
+    def test_chain_reserves_original_batch_before_restoring_active_donors(self):
+        records = [row(1), row(2, LARGE), row(3, LARGE, "Automatic")]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL, "D+2")], policies=rules)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual([(a["refdes"], a["new_component"]) for a in result["actions"]], [("C3", XL), ("C2", XL), ("C1", LARGE)])
+        self.assertEqual([active(result, comp) for comp in (MID, LARGE, XL)], [0, 1, 2])
+
+    def test_lowest_compensation_shortage_rolls_back_every_intermediate_action(self):
+        records = [row(1, MID, "Automatic")]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL)], policies=rules)
+        self.assert_atomic_error(result, records, "compensation_shortage")
+        self.assertEqual(len(result["actions"]), 1)
+        self.assertEqual(result["actions"][0]["new_status"], "Disabled")
+
+    def test_lowest_physical_shortage_is_atomic_after_prior_command(self):
+        records = [row(1, XL), row(2, MID)]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL, "A+3")], policies=rules)
+        self.assert_atomic_error(result, records, "shortage")
+        self.assertEqual(result["actions"][0]["kind"], "command")
+
+    def test_unused_policy_cycle_rejected_before_any_changes(self):
+        records = [row(1)]
+        rules = [policy(XL, LARGE), policy(LARGE, SMALL), policy(SMALL, XL)]
+        result = compute(records, [command()], policies=rules)
+        self.assert_atomic_error(result, records, "policy_cycle")
+        self.assertEqual(result["actions"], [])
+        self.assertIn(XL, next(i["message"] for i in result["issues"] if i["code"] == "policy_cycle"))
+
+    def test_chain_does_not_take_from_another_net_or_unmapped_type(self):
+        records = [row(1, MID), row(2, LARGE, net="U2_TEST"), row(3, "UNMAPPED", distance=100), row(4, "RESISTOR", "Enabled", net="")]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL)], policies=rules)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual(result["records"][1:], records[1:])
+        self.assertEqual(result["records"][0]["component"], XL)
+
+    def test_chain_missing_distance_in_lower_donor_is_atomic(self):
+        records = [row(1), row(2)]
+        records[0]["distance"] = None
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=True)]
+        result = compute(records, [command(XL)], policies=rules)
+        self.assert_atomic_error(result, records, "missing_distance")
+
+    def test_chain_compensation_tie_uses_stable_row_and_audits_direction(self):
+        records = [row(1, LARGE, distance=10), row(2, LARGE, distance=10), row(3, LARGE, "Automatic", distance=20)]
+        result = compute(records, [command(XL)], policies=[policy(XL, LARGE, donor_status="any", compensate=True)])
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual([a["refdes"] for a in result["actions"]], ["C3", "C1"])
+        self.assertEqual(result["actions"][1]["direction"], "D")
+        self.assertIn("distance_tie", {i["code"] for i in result["issues"]})
+
+    def test_uncompensated_lower_policy_is_rejected_atomically(self):
+        records = [row(1, MID, "Automatic")]
+        rules = [policy(XL, LARGE, donor_status="any", compensate=True), policy(LARGE, MID, donor_status="any", compensate=False)]
+        result = compute(records, [command(XL)], policies=rules)
+        self.assert_atomic_error(result, records, "active_compensation_required")
+        self.assertEqual([active(result, comp) for comp in (MID, LARGE, XL)], [1, 0, 0])
+        donor_summary = next(s for s in result["summary"] if s["component"] == MID)
+        self.assertEqual(donor_summary["expected_active"], 1)
+
+    def test_chain_randomized_conservation_against_available_disabled_slots(self):
+        rng = random.Random(947)
+        components = [SMALL, MID, LARGE, XL]
+        rules = [policy(target, donor, donor_status="any", compensate=True)
+                 for donor, target in zip(components, components[1:])]
+        for case in range(160):
+            records = [row(i + 1, rng.choice(components), rng.choice(["Automatic", "Disabled"]),
+                           distance=rng.randrange(10)) for i in range(rng.randrange(2, 20))]
+            target_index, requested = rng.randrange(4), rng.randrange(1, 6)
+            target = components[target_index]
+            eligible_types = set(components[:target_index + 1])
+            available = sum(r["status"] == "Disabled" and r["component"] in eligible_types for r in records)
+            result = compute(records, [command(target, f"D+{requested}")], policies=rules)
+            with self.subTest(case=case, target=target, requested=requested, available=available):
+                self.assertEqual(result["ok"], available >= requested, result["issues"])
+                if result["ok"]:
+                    for component in components:
+                        before = sum(r["component"] == component and r["status"] == "Automatic" for r in records)
+                        self.assertEqual(active(result, component), before + (requested if component == target else 0))
+                    for old, new in zip(records, result["records"]):
+                        if old["component"] not in eligible_types:
+                            self.assertEqual(old, new)
+                        self.assertEqual((old["refdes"], old["net"], old["row"], old["distance"]),
+                                         (new["refdes"], new["net"], new["row"], new["distance"]))
+                else:
+                    self.assertEqual(result["records"], records)
+                    self.assertEqual(result["changes"], [])
 
     def test_rearrangement_includes_disabled_and_preserves_multiset(self):
         records = [row(1, LARGE), row(2, MID, status="Automatic"), row(3, SMALL)]

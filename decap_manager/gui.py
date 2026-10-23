@@ -428,14 +428,14 @@ class App(tk.Tk):
         for text, command in [("↑", lambda: self.move_priority(-1)), ("↓", lambda: self.move_priority(1)),
                               ("용량 수정", self.edit_capacity), ("제외", self.exclude_priority), ("용량순 초기화", self.reset_priority)]:
             ttk.Button(buttons, text=text, command=command).pack(side="left", padx=2)
-        lower = ttk.LabelFrame(page, text="부족한 + 명령의 부품 변환 정책 (명시적으로 추가한 규칙만 적용)", padding=8)
+        lower = ttk.LabelFrame(page, text="부족한 + 명령의 연쇄 변환 규칙 (같은 NET · 작은 용량순 권장)", padding=8)
         lower.pack(fill="both", expand=True, pady=(12, 0))
         self.use_policies = tk.BooleanVar(value=False)
         ttk.Checkbutton(lower, text="아래 변환 규칙 사용 (새 부품은 규칙을 켜면 배치 목록에도 추가)", variable=self.use_policies, command=self.render_policies).pack(anchor="w")
         self.policy_table = table(lower, [("target", "추가할 부품", 200), ("donor", "가져올 부품", 200), ("rule", "자리 선택 / 보정", 350)], 4)
         buttons = ttk.Frame(lower)
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="권장 3가지 규칙 채우기", command=self.suggest_policies).pack(side="left")
+        ttk.Button(buttons, text="용량순 연쇄 규칙 채우기", command=self.suggest_policies).pack(side="left")
         ttk.Button(buttons, text="규칙 추가…", command=self.add_policy).pack(side="left", padx=6)
         ttk.Button(buttons, text="선택 규칙 삭제", command=self.remove_policy).pack(side="left")
 
@@ -491,26 +491,30 @@ class App(tk.Tk):
             self.sort_current_priority()
         self.policy_table.delete(*self.policy_table.get_children())
         for p in self.policies:
-            rule = f"{'먼 순' if p['direction'] == 'D' else '가까운 순'} / {p['donor_status']} / {'활성 수 보정' if p['compensate'] else '보정 없음'}"
+            rule = f"{'먼 순' if p['direction'] == 'D' else '가까운 순'} / {p['donor_status']} / {'먼 Disabled 보정 · 부족 시 연쇄' if p['compensate'] else 'Automatic 변환 불가'}"
             self.policy_table.insert("", "end", values=(p["target"], p["donor"], rule))
         self.invalidate()
 
     def recommended_policies(self):
         by_cap = {}
         for comp, capacity in self.capacities.items():
-            by_cap.setdefault(capacity, []).append(comp)
+            if capacity is not None:
+                by_cap.setdefault(capacity, []).append(comp)
         policies = []
-        for target, donor, direction, status, compensate in [(4700000, 1000000, "D", "Disabled", False),
-                                                            (1000000, 100000, "D", "any", True),
-                                                            (10000, 100000, "A", "Disabled", False)]:
-            if len(by_cap.get(target, [])) == len(by_cap.get(donor, [])) == 1:
-                policies.append(dict(target=by_cap[target][0], donor=by_cap[donor][0], direction=direction, donor_status=status, compensate=compensate))
+        capacities = sorted(by_cap, reverse=True)
+        for target, donor in zip(capacities, capacities[1:]):
+            if len(by_cap[target]) == len(by_cap[donor]) == 1:
+                policies.append(dict(target=by_cap[target][0], donor=by_cap[donor][0], direction="D", donor_status="any", compensate=True))
         return policies
 
     def suggest_policies(self):
         self.policies = policies = self.recommended_policies()
         self.render_policies()
-        messagebox.showinfo("변환 규칙", f"명확히 인식된 {len(policies)}개 규칙을 채웠습니다.\n목록을 확인한 뒤 '아래 변환 규칙 사용'을 선택하세요.\n같은 용량의 부품이 여러 종류이면 수동으로 정확한 이름을 지정하세요.", parent=self)
+        messagebox.showinfo("연쇄 변환 규칙", f"큰 용량 → 바로 다음 작은 용량의 {len(policies)}개 규칙을 채웠습니다.\n"
+                            "상태에 관계없이 먼 자리부터 가져오고, 활성 수량은 먼 Disabled에서 보정합니다.\n"
+                            "자리나 보정분이 부족하면 다음 작은 용량으로 이어집니다.\n"
+                            "목록을 확인한 뒤 '아래 변환 규칙 사용'을 선택하세요.\n"
+                            "같은 용량의 부품이 여러 종류이면 수동으로 정확한 이름을 지정하세요.", parent=self)
 
     def add_policy(self):
         dialog = tk.Toplevel(self)
@@ -518,18 +522,17 @@ class App(tk.Tk):
         dialog.transient(self)
         panel = ttk.Frame(dialog, padding=18)
         panel.pack(fill="both", expand=True)
-        ttk.Label(panel, text="기존 Disabled 자리로 + 수량을 채우지 못할 때만 적용됩니다.").grid(row=0, column=0, columnspan=2, pady=10)
+        ttk.Label(panel, text="자리나 보정분이 부족하면 가져올 부품의 규칙으로 이어집니다.").grid(row=0, column=0, columnspan=2, pady=10)
         target = ttk.Combobox(panel, values=sorted(self.capacities), width=36)
         donor = ttk.Combobox(panel, values=sorted(self.capacities), width=36)
         direction = ttk.Combobox(panel, values=["D · 먼 자리부터", "A · 가까운 자리부터"], state="readonly", width=36)
         direction.current(0)
         status = ttk.Combobox(panel, values=["Disabled만", "Automatic과 Disabled 모두"], state="readonly", width=36)
-        status.current(0)
+        status.current(1)
         for row, (label, widget) in enumerate([("추가할 부품 (새 이름 가능)", target), ("가져올 부품", donor), ("자리 선택", direction), ("가져올 부품의 상태", status)], 1):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 12))
             widget.grid(row=row, column=1, sticky="w", pady=6)
-        compensate = tk.BooleanVar(value=False)
-        ttk.Checkbutton(panel, text="가져올 부품의 활성 수량 보정 (가장 가까운 남은 Disabled 활성화)", variable=compensate).grid(row=5, column=0, columnspan=2, sticky="w", pady=12)
+        ttk.Label(panel, text="활성 수량은 먼 Disabled에서 보정하며, 부족하면 원본 부품의 규칙으로 이어집니다.").grid(row=5, column=0, columnspan=2, sticky="w", pady=12)
 
         def accept():
             target_name, donor_name = target.get().strip(), donor.get().strip()
@@ -539,7 +542,7 @@ class App(tk.Tk):
             if any(p["target"] == target_name for p in self.policies):
                 messagebox.showerror("변환 규칙", "이미 같은 대상의 규칙이 있습니다. 기존 규칙을 삭제한 뒤 추가하세요.", parent=dialog)
                 return
-            self.policies.append(dict(target=target_name, donor=donor_name, direction=direction.get()[0], donor_status="Disabled" if status.current() == 0 else "any", compensate=compensate.get()))
+            self.policies.append(dict(target=target_name, donor=donor_name, direction=direction.get()[0], donor_status="Disabled" if status.current() == 0 else "any", compensate=True))
             self.render_policies()
             dialog.destroy()
 
@@ -609,18 +612,28 @@ class App(tk.Tk):
             messagebox.showerror("계산할 수 없습니다", str(exc), parent=self)
 
     def offer_shortage_rules(self, commands, options):
-        if self.result["ok"] or not any(i["code"] == "shortage" for i in self.result["issues"]):
+        if self.result["ok"] or not any(i["code"] in ("shortage", "compensation_shortage") for i in self.result["issues"]):
             return
         self.result["issues"].append(dict(level="info", code="conversion_guidance", message=
-            "부족 수량을 확인하세요. + 명령의 부족분을 다른 부품에서 가져오려면 '3 배치 · 변환'에서 "
-            "정확한 부품명의 변환 규칙을 확인하고 '아래 변환 규칙 사용'을 켜세요. "
+            "'3 배치 · 변환'에서 부족한 부품과 그 원본 부품의 규칙이 이어지는지 확인하세요. "
+            "연쇄의 마지막 용량에서도 자리나 활성 수량 보정분이 부족하면 계산할 수 없습니다. "
+            "규칙을 사용할 때는 '아래 변환 규칙 사용'을 켜세요. "
             "같은 용량의 부품이 여러 종류이면 '규칙 추가'로 직접 지정해야 합니다."))
         # Do not enable unrelated saved rules when the user has switched them off.
         if self.policies and not self.use_policies.get():
             return
-        targets = {self.aliases.get(c["component"], c["component"]) for c in commands}
-        configured = {p["target"] for p in self.policies}
-        suggested = [p for p in self.recommended_policies() if p["target"] in targets - configured]
+        linked = {p["target"]: p["donor"] for p in self.policies}
+        suggested = []
+        for policy in self.recommended_policies():
+            if policy["target"] in linked:
+                continue
+            donor, seen = policy["donor"], {policy["target"]}
+            while donor in linked and donor not in seen:
+                seen.add(donor)
+                donor = linked[donor]
+            if donor not in seen:
+                linked[policy["target"]] = policy["donor"]
+                suggested.append(policy)
         if not suggested:
             return
         trial = compute(self.records, commands, policies=self.policies + suggested, **options)
@@ -632,15 +645,18 @@ class App(tk.Tk):
             return
         lines = []
         for policy in needed:
-            count = sum(a["new_component"] == policy["target"] for a in conversions)
+            changes = [a for a in conversions if a["new_component"] == policy["target"]]
+            active = sum(a["new_status"] == "Automatic" for a in changes)
+            disabled = len(changes) - active
             status = "Disabled만" if policy["donor_status"] == "Disabled" else "Automatic / Disabled"
             direction = "먼 자리부터" if policy["direction"] == "D" else "가까운 자리부터"
-            compensation = "원본 부품의 활성 수량 보정" if policy["compensate"] else "보정 없음"
-            lines.append(f"{policy['donor']} → {policy['target']} / Automatic: {count}개\n"
+            compensation = "먼 Disabled에서 활성 수 보정 · 부족 시 연쇄 확보"
+            lines.append(f"{policy['donor']} → {policy['target']}: {len(changes)}개 (Automatic {active}개 / Disabled {disabled}개)\n"
                          f"  같은 NET · {status} · {direction} · {compensation}")
         if messagebox.askyesno("부족분 변환 규칙 확인",
                 "현재 부품의 Disabled 자리만으로는 + 명령을 채울 수 없습니다.\n"
-                "아래 규칙을 추가하면 전체 계산과 수량 검증을 통과합니다.\n\n" + "\n\n".join(lines) +
+                "아래 규칙을 추가하면 전체 계산과 수량 검증을 통과합니다.\n"
+                "중간 용량의 Disabled 변환은 다음 용량으로 넘길 자리를 확보하는 단계입니다.\n\n" + "\n\n".join(lines) +
                 "\n\n이 규칙을 켜고 미리보기를 진행할까요?\n"
                 "원본 파일은 변경하지 않으며, 결과 저장 전에 변경 목록을 확인할 수 있습니다.",
                 parent=self, default="no"):

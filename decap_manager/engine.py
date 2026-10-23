@@ -156,6 +156,20 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
         else:
             policy_by_target[policy["target"]] = dict(policy)
 
+    checked = set()
+    for target in policy_by_target:
+        path, positions = [], {}
+        current = target
+        while current in policy_by_target and current not in checked:
+            if current in positions:
+                cycle = path[positions[current]:] + [current]
+                issue("policy_cycle", "변환 규칙에 순환이 있습니다: " + " → ".join(cycle))
+                break
+            positions[current] = len(path)
+            path.append(current)
+            current = policy_by_target[current]["donor"]
+        checked.update(path)
+
     parsed_commands, seen_commands = [], set()
     for command in commands:
         if not isinstance(command, dict):
@@ -228,6 +242,44 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
         reasons[record["row"]].append(reason)
         record["component"], record["status"] = component, status
 
+    def supply(component, count, status, command, step, purpose="부족분 변환"):
+        net = command["net"]
+        context = f"{command['source']}: {net} / {component}"
+        policy = policy_by_target[component]
+        donor = policy["donor"]
+        candidates = group(net, donor)
+        validate_statuses(candidates, context + f" / 변환 원본 {donor}")
+        candidates = [r for r in candidates if policy["donor_status"] == "any" or r["status"] == "Disabled"]
+        donor_rows = ordered(candidates, policy["direction"], context + f" / 변환 원본 {donor}", count)[:count]
+        missing = count - len(donor_rows)
+        if missing:
+            if donor not in policy_by_target:
+                raise _CalculationError("shortage", f"{context}: 변환 가능한 {donor} {count}개 중 {len(donor_rows)}개만 있습니다 (부족 {missing}개). {donor}를 확보할 다음 변환 규칙이 없습니다.")
+            # Reserved donors cannot be reached by lower rules because cycles were rejected.
+            donor_rows += supply(donor, missing, "Disabled", command, step, "연쇄 확보 · 임시 Disabled")
+        authorized[net].update((component, donor))
+        active_donors = sum(r["status"] == "Automatic" for r in donor_rows)
+        if active_donors and not policy["compensate"]:
+            raise _CalculationError("active_compensation_required", f"{context}: Automatic {donor} {active_donors}개를 변환하려면 활성 수량 보정이 필요합니다. 변환 규칙의 보정을 켜거나 Disabled 자리만 선택하세요.")
+        for record in donor_rows:
+            reason = f"{purpose}: {donor} → {component}/{status}, {policy['direction']}순 거리 {record['distance']:g}"
+            change(record, component, status, "conversion", reason, command,
+                   step=step, direction=policy["direction"], compensate=policy["compensate"])
+        expected_total[(net, donor)] -= count
+        expected_total[(net, component)] += count
+        if active_donors:
+            compensation = ordered([r for r in group(net, donor) if r["status"] == "Disabled"],
+                                   "D", context + f" / {donor} 활성 수량 보정", active_donors)[:active_donors]
+            for record in compensation:
+                reason = f"활성 수량 보정: {donor} 변환으로 줄어든 Automatic을 가장 먼 Disabled에서 복구, 거리 {record['distance']:g}"
+                change(record, donor, "Automatic", "compensation", reason, command, step=step, direction="D")
+            missing = active_donors - len(compensation)
+            if missing:
+                if donor not in policy_by_target:
+                    raise _CalculationError("compensation_shortage", f"{context}: Automatic {donor} {active_donors}개를 보정할 남은 Disabled는 {len(compensation)}개이며, 부족한 {missing}개를 확보할 다음 변환 규칙이 없습니다.")
+                supply(donor, missing, "Automatic", command, step, "연쇄 활성 수량 보정")
+        return donor_rows
+
     try:
         for command in parsed_commands:
             net, component = command["net"], command["component"]
@@ -249,32 +301,7 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
                 policy = policy_by_target.get(component) if delta > 0 else None
                 if policy is None:
                     raise _CalculationError("shortage", f"{context}: {direction}{delta:+d}에 필요한 {old_status} {count}개 중 {len(chosen)}개만 있습니다 (부족 {missing}개).")
-                donor = policy["donor"]
-                donor_rows = group(net, donor)
-                validate_statuses(donor_rows, context + f" / 변환 원본 {donor}")
-                candidates = [r for r in donor_rows if policy["donor_status"] == "any" or r["status"] == "Disabled"]
-                donor_rows = ordered(candidates, policy["direction"], context + f" / 변환 원본 {donor}", missing)[:missing]
-                if len(donor_rows) < missing:
-                    raise _CalculationError("shortage", f"{context}: 기존 {old_status} {len(chosen)}개, 변환 가능한 {donor} {len(donor_rows)}개로 {count}개를 채울 수 없습니다 (부족 {missing - len(donor_rows)}개).")
-                authorized[net].add(donor)
-                active_donors = sum(r["status"] == "Automatic" for r in donor_rows)
-                for record in donor_rows:
-                    reason = f"부족분 변환: {donor} → {component}/Automatic, {policy['direction']}순 거리 {record['distance']:g}"
-                    change(record, component, "Automatic", "conversion", reason, command,
-                           step=step, direction=policy["direction"], compensate=policy["compensate"])
-                expected_total[(net, donor)] -= missing
-                expected_total[(net, component)] += missing
-                if active_donors and policy["compensate"]:
-                    compensation = ordered([r for r in group(net, donor) if r["status"] == "Disabled"],
-                                           "A", context + f" / {donor} 활성 수량 보정", active_donors)[:active_donors]
-                    if len(compensation) < active_donors:
-                        raise _CalculationError("compensation_shortage", f"{context}: 변환한 Automatic {donor} {active_donors}개를 보정할 남은 Disabled가 {len(compensation)}개뿐입니다.")
-                    for record in compensation:
-                        reason = f"활성 수량 보정: {donor} 변환으로 줄어든 Automatic을 가장 가까운 Disabled에서 복구, 거리 {record['distance']:g}"
-                        change(record, donor, "Automatic", "compensation", reason, command, step=step, direction="A")
-                elif active_donors:
-                    expected_active[(net, donor)] -= active_donors
-                    issue("donor_active_reduced", f"{context}: 보정하지 않는 명시적 규칙에 따라 {donor}의 Automatic이 {active_donors}개 감소합니다.", "warning")
+                supply(component, missing, "Automatic", command, step)
 
         if rearrange:
             ranks = {component: index for index, component in enumerate(priority)}

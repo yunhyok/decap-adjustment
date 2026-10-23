@@ -148,7 +148,7 @@ def test_shortage_recovery_requires_approval_and_adds_only_used_rule(app, monkey
     assert "먼" in proposal or "D" in proposal
     assert "보정" in proposal
     assert "CAP_10NF" not in proposal and "CAP_100NF" not in proposal
-    assert app.policies == [dict(target="CAP_4U7F", donor="CAP_1UF", direction="D", donor_status="Disabled", compensate=False)]
+    assert app.policies == [dict(target="CAP_4U7F", donor="CAP_1UF", direction="D", donor_status="any", compensate=True)]
     assert app.use_policies.get()
     assert app.result["ok"]
     assert [(change["refdes"], change["new_component"], change["new_status"]) for change in app.result["changes"]] == [("C4", "CAP_4U7F", "Automatic")]
@@ -170,7 +170,7 @@ def test_declined_shortage_recovery_keeps_atomic_failure(app, monkeypatch):
     assert "disabled" in app.save_button.state()
 
 
-@pytest.mark.parametrize("reason", ["ambiguous", "no_disabled_donor"])
+@pytest.mark.parametrize("reason", ["ambiguous", "all_smaller_positions_active"])
 def test_unusable_recovery_does_not_offer_success(app, monkeypatch, reason):
     from copy import deepcopy
     _shortage_setup(app)
@@ -179,7 +179,7 @@ def test_unusable_recovery_does_not_offer_success(app, monkeypatch, reason):
         app.capacities["CAP_OTHER_1UF"] = 1_000_000
     else:
         for record in app.records:
-            if record["net"] == "DEMO" and record["component"] == "CAP_1UF":
+            if record["net"] == "DEMO":
                 record["status"] = "Automatic"
     original = deepcopy(app.records)
     prompts = _capture_recovery_prompt(monkeypatch, True)
@@ -232,7 +232,7 @@ def test_recovery_never_replaces_existing_target_policy(app, monkeypatch):
     custom = dict(target="CAP_4U7F", donor="CAP_100NF", direction="A", donor_status="Disabled", compensate=False)
     app.policies = [custom.copy()]
     app.use_policies.set(True)
-    app.manual[0]["expression"] = "D+2"
+    app.manual[0]["expression"] = "D+3"
     prompts = _capture_recovery_prompt(monkeypatch, True)
     app.preview()
     assert not prompts
@@ -254,6 +254,7 @@ def test_one_uf_recovery_checks_active_donor_compensation_before_offer(app, monk
     app.records.append(dict(row=8, refdes="C7", net="DEMO", component="CAP_100NF", status="Automatic", distance=120))
     if not can_compensate:
         app.records[1]["status"] = "Automatic"
+        app.records[0]["status"] = "Automatic"
     original = deepcopy(app.records)
     prompts = _capture_recovery_prompt(monkeypatch, True)
     app.preview()
@@ -282,3 +283,99 @@ def test_recovery_omits_commanded_rule_when_existing_positions_are_enough(app, m
     assert "CAP_10NF" not in prompts[0][1] and "CAP_100NF" not in prompts[0][1]
     assert {change["refdes"] for change in app.result["changes"]} == {"C1", "C4"}
     assert app.records == original
+
+
+def _move_intermediates_to_other_net(app, target="CAP_4U7F"):
+    from copy import deepcopy
+    _shortage_setup(app)
+    for record in app.records:
+        if record["component"] == "CAP_1UF" or target == "CAP_22UF" and record["component"] == "CAP_4U7F":
+            record["net"] = "OTHER"
+    if target == "CAP_22UF":
+        app.records.append(dict(row=8, refdes="C7", net="DEMO", component=target, status="Automatic", distance=150))
+        app.capacities[target] = 22_000_000
+        app.reset_priority()
+    app.manual[0]["component"] = target
+    return deepcopy(app.records)
+
+
+@pytest.mark.parametrize("target, used_targets", [
+    ("CAP_4U7F", {"CAP_1UF", "CAP_4U7F"}),
+    ("CAP_22UF", {"CAP_1UF", "CAP_4U7F", "CAP_22UF"}),
+])
+def test_cascade_proposes_transitive_rules_and_recomputes_identically(app, monkeypatch, target, used_targets):
+    from copy import deepcopy
+    original = _move_intermediates_to_other_net(app, target)
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert len(prompts) == 1 and app.result["ok"]
+    assert app.records == original
+    assert {policy["target"] for policy in app.policies} == used_targets
+    assert all(policy["donor_status"] == "any" and policy["compensate"] for policy in app.policies)
+    assert [(change["refdes"], change["new_component"], change["new_status"]) for change in app.result["changes"]] == [("C2", target, "Automatic")]
+    intermediate = [action for action in app.result["actions"] if action["kind"] == "conversion" and action["new_component"] != target]
+    assert {action["new_component"] for action in intermediate} == used_targets - {target}
+    assert all(action["new_status"] == "Disabled" for action in intermediate)
+    proposal = prompts[0][1]
+    assert "CAP_100NF" in proposal and all(component in proposal for component in used_targets)
+    for component in used_targets:
+        line = next(line for line in proposal.splitlines() if f"→ {component}:" in line)
+        expected_counts = "Automatic 1개 / Disabled 0개" if component == target else "Automatic 0개 / Disabled 1개"
+        assert expected_counts in line
+    assert "CAP_10NF" not in proposal
+    verified_trial = deepcopy(app.result)
+    app.preview()
+    assert len(prompts) == 1
+    assert app.result["ok"]
+    for key in ("records", "changes", "summary", "actions"):
+        assert app.result[key] == verified_trial[key]
+    assert app.records == original
+
+
+def test_declining_cascade_keeps_all_intermediate_rules_unapplied(app, monkeypatch):
+    original = _move_intermediates_to_other_net(app)
+    prompts = _capture_recovery_prompt(monkeypatch, False)
+    app.preview()
+    assert len(prompts) == 1 and "CAP_100NF → CAP_1UF" in prompts[0][1]
+    assert not app.result["ok"] and not app.result["changes"]
+    assert app.result["records"] == original == app.records
+    assert not app.policies and not app.use_policies.get()
+    assert "disabled" in app.save_button.state()
+
+
+def test_farthest_automatic_donor_precedes_nearer_disabled_and_compensates_far(app, monkeypatch):
+    from copy import deepcopy
+    _shortage_setup(app)
+    app.records[3]["status"] = "Automatic"
+    app.records.append(dict(row=8, refdes="C7", net="DEMO", component="CAP_1UF", status="Disabled", distance=70))
+    original = deepcopy(app.records)
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert len(prompts) == 1 and app.result["ok"]
+    assert [(action["kind"], action["refdes"], action["direction"]) for action in app.result["actions"]] == [
+        ("conversion", "C4", "D"), ("compensation", "C7", "D")]
+    assert app.result["records"][2] == original[2]
+    assert sum(record["net"] == "DEMO" and record["component"] == "CAP_1UF" and record["status"] == "Automatic"
+               for record in app.result["records"]) == 1
+    assert app.records == original
+    assert len(app.policies) == 1 and app.policies[0]["target"] == "CAP_4U7F"
+
+
+def test_recommended_rules_are_adjacent_and_do_not_skip_ambiguous_capacity(app, monkeypatch):
+    _move_intermediates_to_other_net(app, "CAP_22UF")
+    app.capacities["UNRECOGNIZED_PART"] = None
+    policies = app.recommended_policies()
+    assert {(policy["target"], policy["donor"]) for policy in policies} == {
+        ("CAP_22UF", "CAP_4U7F"), ("CAP_4U7F", "CAP_1UF"),
+        ("CAP_1UF", "CAP_100NF"), ("CAP_100NF", "CAP_10NF")}
+    assert all(policy["direction"] == "D" and policy["donor_status"] == "any" and policy["compensate"] for policy in policies)
+    app.capacities["CAP_ALTERNATE_1UF"] = 1_000_000
+    app.records.append(dict(row=9, refdes="C8", net="OTHER", component="CAP_ALTERNATE_1UF", status="Disabled", distance=300))
+    policies = app.recommended_policies()
+    assert {(policy["target"], policy["donor"]) for policy in policies} == {
+        ("CAP_22UF", "CAP_4U7F"), ("CAP_100NF", "CAP_10NF")}
+    prompts = _capture_recovery_prompt(monkeypatch, True)
+    app.preview()
+    assert not prompts and not app.result["ok"]
+    assert not app.policies and not app.result["changes"]
+    assert "disabled" in app.save_button.state()
