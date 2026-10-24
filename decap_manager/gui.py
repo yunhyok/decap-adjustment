@@ -17,6 +17,7 @@ from . import __version__
 from .engine import compute, parse_capacitance, parse_expression
 from .excel_io import (export_results, inspect_workbook, join_distances,
                        read_commands, read_distances, read_refdes)
+from .shortage import find_shortages, shortage_choices
 
 
 def asset_root():
@@ -43,6 +44,69 @@ def table(parent, columns, height=12):
     frame.columnconfigure(0, weight=1)
     frame.rowconfigure(0, weight=1)
     return tree
+
+
+class QuantityShortageDialog(tk.Toplevel):
+    def __init__(self, parent, shortage, choices):
+        super().__init__(parent)
+        self.title("자리 부족 · 수량 조정 선택")
+        self.geometry("1000x700")
+        self.minsize(850, 620)
+        self.transient(parent)
+        self.result = None
+        self.shortage, self.choices = shortage, choices
+        panel = ttk.Frame(self, padding=18)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text=shortage["net"], font=("Malgun Gothic", 14, "bold")).pack(anchor="w")
+        ttk.Label(panel, text=f"조정 가능한 자리 {shortage['total']}개 · 현재 활성 {shortage['active']}개 · "
+                             f"명령 적용 시 {shortage['requested_active']}개 → {shortage['deficit']}개 초과").pack(anchor="w", pady=8)
+        self.amounts = table(panel, [("component", "부품", 290), ("total", "현재 자리", 100),
+                                     ("active", "현재 활성", 100), ("requested", "원래 명령 적용", 130),
+                                     ("adjusted", "선택안 적용", 130)], 4)
+        for row in shortage["components"]:
+            self.amounts.insert("", "end", values=(row["component"], row["total"], row["active"], row["requested_active"], "—"))
+        ttk.Label(panel, text="조정안을 선택하세요. 다른 용량을 줄이는 안은 가까운 Automatic 자리부터 감소합니다.").pack(anchor="w", pady=(12, 4))
+        self.choices_table = table(panel, [("label", "조정안", 850)], 4)
+        self.choices_table.configure(selectmode="browse")
+        for index, choice in enumerate(choices):
+            self.choices_table.insert("", "end", iid=str(index), values=(choice["label"],))
+        self.choices_table.bind("<<TreeviewSelect>>", self.select_choice)
+        self.detail = tk.StringVar(value="선택한 NET의 계산을 통과한 대안만 표시합니다." if choices else
+                                 "자동으로 제안할 수 있는 조정안이 없습니다. 명령과 변환 규칙을 직접 확인하세요.")
+        ttk.Label(panel, textvariable=self.detail, wraplength=800, justify="left").pack(fill="x", pady=10)
+        ttk.Label(panel, text="원본 Excel은 변경하지 않습니다. 선택은 이번 계산에만 적용되며 재계산 시 다시 선택합니다.\n"
+                              "필요한 연쇄 규칙을 확인하고 전체 NET·재배치 검증을 통과한 후에만 저장할 수 있습니다.",
+                  wraplength=800, justify="left").pack(fill="x", pady=6)
+        buttons = ttk.Frame(panel)
+        buttons.pack(fill="x", pady=(10, 0))
+        self.apply_button = ttk.Button(buttons, text="선택안으로 다시 계산", command=self.accept, state="disabled")
+        self.apply_button.pack(side="right")
+        ttk.Button(buttons, text="취소", command=self.destroy).pack(side="right", padx=8)
+        self.bind("<Return>", lambda _event: self.accept())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.grab_set()
+        self.wait_window()
+
+    def select_choice(self, _event=None):
+        selected = self.choices_table.selection()
+        if not selected:
+            self.apply_button.configure(state="disabled")
+            return
+        choice = self.choices[int(selected[0])]
+        self.detail.set(choice["description"])
+        after = {row["component"]: row["after_active"] for row in choice["summary"]}
+        for item in self.amounts.get_children():
+            values = list(self.amounts.item(item, "values"))
+            values[-1] = after.get(values[0], 0)
+            self.amounts.item(item, values=values)
+        self.apply_button.configure(state="normal")
+
+    def accept(self):
+        selected = self.choices_table.selection()
+        if selected:
+            self.result = self.choices[int(selected[0])]
+            self.destroy()
 
 
 class MappingDialog(tk.Toplevel):
@@ -602,7 +666,18 @@ class App(tk.Tk):
                 raise ValueError("증감 명령을 추가하거나 재배치를 선택하세요.")
             options = dict(priority=priority, rearrange=self.rearrange.get(), selected_nets=nets, aliases=self.aliases)
             self.result = compute(self.records, commands, policies=self.policies if self.use_policies.get() else [], **options)
+            commands, adjustments = self.choose_quantity_adjustments(commands)
+            if commands is None:
+                self.show_result()
+                return
+            if adjustments:
+                self.result = compute(self.records, commands, policies=self.policies if self.use_policies.get() else [], **options)
             self.offer_shortage_rules(commands, options)
+            for adjustment in adjustments:
+                issue = dict(adjustment, applied=self.result["ok"])
+                if not self.result["ok"]:
+                    issue["message"] = "전체 취소됨 · " + issue["message"]
+                self.result["issues"].append(issue)
             self.show_result()
         except Exception as exc:
             self.result = None
@@ -611,17 +686,10 @@ class App(tk.Tk):
             self.notice.set("입력과 설정을 확인하세요.")
             messagebox.showerror("계산할 수 없습니다", str(exc), parent=self)
 
-    def offer_shortage_rules(self, commands, options):
-        if self.result["ok"] or not any(i["code"] in ("shortage", "compensation_shortage") for i in self.result["issues"]):
-            return
-        self.result["issues"].append(dict(level="info", code="conversion_guidance", message=
-            "'3 배치 · 변환'에서 부족한 부품과 그 원본 부품의 규칙이 이어지는지 확인하세요. "
-            "연쇄의 마지막 용량에서도 자리나 활성 수량 보정분이 부족하면 계산할 수 없습니다. "
-            "규칙을 사용할 때는 '아래 변환 규칙 사용'을 켜세요. "
-            "같은 용량의 부품이 여러 종류이면 '규칙 추가'로 직접 지정해야 합니다."))
+    def additional_recommended_policies(self):
         # Do not enable unrelated saved rules when the user has switched them off.
         if self.policies and not self.use_policies.get():
-            return
+            return []
         linked = {p["target"]: p["donor"] for p in self.policies}
         suggested = []
         for policy in self.recommended_policies():
@@ -634,6 +702,34 @@ class App(tk.Tk):
             if donor not in seen:
                 linked[policy["target"]] = policy["donor"]
                 suggested.append(policy)
+        return suggested
+
+    def choose_quantity_adjustments(self, commands):
+        if self.result["ok"] or not any(i["code"] in ("shortage", "compensation_shortage") for i in self.result["issues"]):
+            return commands, []
+        policies = (self.policies if self.use_policies.get() else []) + self.additional_recommended_policies()
+        adjustments = []
+        while shortages := find_shortages(self.records, commands, self.aliases):
+            shortage = shortages[0]
+            choices = shortage_choices(self.records, commands, shortage, policies=policies, aliases=self.aliases)
+            selected = QuantityShortageDialog(self, shortage, choices).result
+            if selected is None:
+                self.result["issues"].append(dict(level="info", code="quantity_adjustment_cancelled",
+                                                  message="수량 조정을 취소했습니다. 이번 계산에서 선택한 조정안도 모두 적용하지 않습니다."))
+                return None, []
+            commands = selected["commands"]
+            adjustments.append(selected["adjustment"])
+        return commands, adjustments
+
+    def offer_shortage_rules(self, commands, options):
+        if self.result["ok"] or not any(i["code"] in ("shortage", "compensation_shortage") for i in self.result["issues"]):
+            return
+        self.result["issues"].append(dict(level="info", code="conversion_guidance", message=
+            "'3 배치 · 변환'에서 부족한 부품과 그 원본 부품의 규칙이 이어지는지 확인하세요. "
+            "연쇄의 마지막 용량에서도 자리나 활성 수량 보정분이 부족하면 계산할 수 없습니다. "
+            "규칙을 사용할 때는 '아래 변환 규칙 사용'을 켜세요. "
+            "같은 용량의 부품이 여러 종류이면 '규칙 추가'로 직접 지정해야 합니다."))
+        suggested = self.additional_recommended_policies()
         if not suggested:
             return
         trial = compute(self.records, commands, policies=self.policies + suggested, **options)

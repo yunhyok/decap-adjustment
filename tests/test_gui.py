@@ -114,6 +114,7 @@ def _shortage_setup(app):
 
 
 def _capture_recovery_prompt(monkeypatch, answer, before_answer=None):
+    from types import SimpleNamespace
     prompts = []
     def ask(title, message, **kwargs):
         prompts.append((title, message, kwargs))
@@ -123,6 +124,8 @@ def _capture_recovery_prompt(monkeypatch, answer, before_answer=None):
     monkeypatch.setattr("decap_manager.gui.messagebox.askyesno", ask)
     monkeypatch.setattr("decap_manager.gui.messagebox.showerror", lambda *args, **kwargs: None)
     monkeypatch.setattr("decap_manager.gui.messagebox.showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr("decap_manager.gui.QuantityShortageDialog",
+                        lambda *args, **kwargs: SimpleNamespace(result=None), raising=False)
     return prompts
 
 
@@ -190,7 +193,10 @@ def test_unusable_recovery_does_not_offer_success(app, monkeypatch, reason):
     assert not app.result["changes"] and not app.policies
     assert "disabled" in app.save_button.state()
     guidance = app.details.get("1.0", "end")
-    assert "규칙" in guidance or "배치" in guidance
+    if reason == "all_smaller_positions_active":
+        assert "quantity_adjustment_cancelled" in {issue["code"] for issue in app.result["issues"]}
+    else:
+        assert "규칙" in guidance or "배치" in guidance
 
 
 def test_recovery_preserves_and_runs_existing_active_custom_policy(app, monkeypatch):
@@ -379,3 +385,161 @@ def test_recommended_rules_are_adjacent_and_do_not_skip_ambiguous_capacity(app, 
     assert not prompts and not app.result["ok"]
     assert not app.policies and not app.result["changes"]
     assert "disabled" in app.save_button.state()
+
+
+def _quantity_setup(app, tmp_path, nets=("DEMO",)):
+    from copy import deepcopy
+    from openpyxl import Workbook
+    from decap_manager.excel_io import inspect_workbook
+
+    refdes = Workbook()
+    refdes.active.append(["Component", "RefDes", "Status", "NET"])
+    distance = Workbook()
+    distance.active.append(["RefDes", "NET", "Distance"])
+    for site, net in enumerate(nets):
+        for index, (component, status, value) in enumerate([
+            ("CAP_100NF", "Automatic", 10), ("CAP_100NF", "Automatic", 20),
+            ("CAP_100NF", "Disabled", 90), ("CAP_1UF", "Automatic", 30),
+            ("CAP_1UF", "Automatic", 80), ("CAP_4U7F", "Automatic", 100),
+        ], 1):
+            name = f"C{site}_{index}"
+            refdes.active.append([component, name, status, net])
+            distance.active.append([name, net, value])
+    paths = {"refdes": tmp_path / "synthetic_refdes.xlsx", "distance": tmp_path / "synthetic_distance.xlsx"}
+    refdes.save(paths["refdes"])
+    distance.save(paths["distance"])
+    refdes.close()
+    distance.close()
+    app.paths = {kind: str(path) for kind, path in paths.items()}
+    app.mappings = {kind: inspect_workbook(path, kind)[0] for kind, path in paths.items()}
+    app.reload_records()
+    app.manual = [dict(net=net, component="CAP_4U7F", expression="D+2", source="Synthetic quantity test") for net in nets]
+    app.mode.set("direct")
+    return deepcopy(app.records), deepcopy(app.manual), {path: path.read_bytes() for path in paths.values()}
+
+
+def _choice_with_counts(choices, expected):
+    return next(choice for choice in choices
+                if {row["component"]: row["after_active"] for row in choice["summary"]} == expected)
+
+
+def _quantity_dialog_stub(monkeypatch, select):
+    from types import SimpleNamespace
+    calls = []
+    def dialog(_parent, shortage, choices):
+        calls.append((shortage, choices))
+        return SimpleNamespace(result=select(shortage, choices, len(calls)))
+    monkeypatch.setattr("decap_manager.gui.QuantityShortageDialog", dialog)
+    return calls
+
+
+@pytest.mark.parametrize("expected", [
+    {"CAP_100NF": 2, "CAP_1UF": 2, "CAP_4U7F": 2},
+    {"CAP_100NF": 1, "CAP_1UF": 2, "CAP_4U7F": 3},
+    {"CAP_100NF": 2, "CAP_1UF": 1, "CAP_4U7F": 3},
+])
+def test_quantity_choice_applies_only_to_current_preview(app, monkeypatch, tmp_path, expected):
+    original, manual, sources = _quantity_setup(app, tmp_path)
+    rule_prompts = _capture_recovery_prompt(monkeypatch, True)
+    quantity_prompts = _quantity_dialog_stub(monkeypatch, lambda shortage, choices, _: _choice_with_counts(choices, expected))
+    app.preview()
+    assert app.result["ok"] and len(quantity_prompts) == 1
+    assert quantity_prompts[0][0]["deficit"] == 1
+    assert len(quantity_prompts[0][1]) == 3
+    assert {row["component"]: row["after_active"] for row in app.result["summary"]} == expected
+    assert any(issue["code"] == "quantity_adjustment" and issue["applied"] for issue in app.result["issues"])
+    reduced_refdes = "C0_1" if expected["CAP_100NF"] == 1 else "C0_4" if expected["CAP_1UF"] == 1 else None
+    if reduced_refdes:
+        first_action = app.result["actions"][0]
+        assert (first_action["kind"], first_action["refdes"], first_action["new_status"], first_action["direction"]) == (
+            "command", reduced_refdes, "Disabled", "A")
+    assert app.records == original and app.manual == manual
+    assert all(path.read_bytes() == content for path, content in sources.items())
+    assert "disabled" not in app.save_button.state()
+    assert len(rule_prompts) == 1
+    app.preview()
+    assert app.result["ok"] and len(quantity_prompts) == 2
+    assert len(rule_prompts) == 1
+    assert app.manual == manual
+
+
+@pytest.mark.parametrize("cancel_at, nets", [(1, ("DEMO",)), (2, ("DEMO_A", "DEMO_B"))])
+def test_quantity_cancellation_discards_every_preview_choice(app, monkeypatch, tmp_path, cancel_at, nets):
+    original, manual, sources = _quantity_setup(app, tmp_path, nets)
+    rule_prompts = _capture_recovery_prompt(monkeypatch, True)
+    expected = {"CAP_100NF": 2, "CAP_1UF": 2, "CAP_4U7F": 2}
+    quantity_prompts = _quantity_dialog_stub(monkeypatch, lambda shortage, choices, count:
+                                           None if count == cancel_at else _choice_with_counts(choices, expected))
+    app.preview()
+    assert len(quantity_prompts) == cancel_at and not rule_prompts
+    assert not app.result["ok"] and not app.result["changes"]
+    assert app.result["records"] == original == app.records and app.manual == manual
+    assert not app.policies and not app.use_policies.get()
+    assert not any(issue["code"] == "quantity_adjustment" for issue in app.result["issues"])
+    assert "disabled" in app.save_button.state()
+    assert all(path.read_bytes() == content for path, content in sources.items())
+
+
+def test_quantity_choice_does_not_approve_conversion_rules(app, monkeypatch, tmp_path):
+    original, manual, _ = _quantity_setup(app, tmp_path)
+    rule_prompts = _capture_recovery_prompt(monkeypatch, False)
+    expected = {"CAP_100NF": 2, "CAP_1UF": 2, "CAP_4U7F": 2}
+    _quantity_dialog_stub(monkeypatch, lambda shortage, choices, _: _choice_with_counts(choices, expected))
+    app.preview()
+    assert len(rule_prompts) == 1
+    assert not app.result["ok"] and not app.result["changes"]
+    assert app.result["records"] == original == app.records and app.manual == manual
+    assert not app.policies and not app.use_policies.get()
+    assert "disabled" in app.save_button.state()
+    assert all(not issue["applied"] for issue in app.result["issues"] if issue["code"] == "quantity_adjustment")
+
+
+def test_quantity_flow_does_not_enable_disabled_saved_rules(app, monkeypatch, tmp_path):
+    original, manual, _ = _quantity_setup(app, tmp_path)
+    saved = dict(target="CAP_1UF", donor="CAP_100NF", direction="A", donor_status="Disabled", compensate=False)
+    app.policies = [saved.copy()]
+    app.use_policies.set(False)
+    rule_prompts = _capture_recovery_prompt(monkeypatch, True)
+    expected = {"CAP_100NF": 2, "CAP_1UF": 2, "CAP_4U7F": 2}
+    _quantity_dialog_stub(monkeypatch, lambda shortage, choices, _: _choice_with_counts(choices, expected) if choices else None)
+    app.preview()
+    assert not rule_prompts and not app.result["ok"]
+    assert app.policies == [saved] and not app.use_policies.get()
+    assert app.result["records"] == original == app.records and app.manual == manual
+    assert "disabled" in app.save_button.state()
+
+
+def test_export_records_quantity_choice_in_audit_and_validation(app, monkeypatch, tmp_path):
+    import json
+    from openpyxl import Workbook, load_workbook
+    from decap_manager.excel_io import inspect_workbook
+    original, manual, sources = _quantity_setup(app, tmp_path)
+    command_path = tmp_path / "synthetic_commands.xlsx"
+    commands = Workbook()
+    commands.active.append(["NET", "Component", "Command"])
+    commands.active.append(["DEMO", "CAP_4U7F", "D+2"])
+    commands.save(command_path)
+    commands.close()
+    app.paths["commands"] = str(command_path)
+    app.mappings["commands"] = inspect_workbook(command_path, "commands")[0]
+    app.reload_records()
+    app.mode.set("excel")
+    sources[command_path] = command_path.read_bytes()
+    _capture_recovery_prompt(monkeypatch, True)
+    expected = {"CAP_100NF": 1, "CAP_1UF": 2, "CAP_4U7F": 3}
+    _quantity_dialog_stub(monkeypatch, lambda shortage, choices, _: _choice_with_counts(choices, expected))
+    app.preview()
+    assert app.result["ok"]
+    output = tmp_path / "exports"
+    monkeypatch.setattr("decap_manager.gui.filedialog.askdirectory", lambda **kwargs: str(output))
+    app.save()
+    directory = next(output.iterdir())
+    audit = json.loads((directory / "audit.json").read_text(encoding="utf-8"))
+    adjustment = next(issue for issue in audit["issues"] if issue["code"] == "quantity_adjustment")
+    assert adjustment["applied"] and "A-1" in adjustment["message"]
+    workbook = load_workbook(directory / "validation.xlsx", read_only=True, data_only=False)
+    issue_rows = list(workbook["Issues"].iter_rows(min_row=2, values_only=True))
+    workbook.close()
+    assert any(row[1] == "quantity_adjustment" and row[2] == adjustment["message"] for row in issue_rows)
+    assert app.records == original and app.manual == manual
+    assert all(path.read_bytes() == content for path, content in sources.items())
