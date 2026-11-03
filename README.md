@@ -121,18 +121,17 @@ Windows 설치파일은 [패키징 안내](packaging/README.md)에 따라 빌드
 
 MIT License. [외부 구성요소 고지](packaging/THIRD_PARTY_NOTICES.md). 새 아이콘은 [생성 프롬프트와 출처](assets/ICON.md)를 기록했습니다.
 
-## Windows installation paths
+## Windows 설치 경로
 
-New installations default to **Program Files** using Inno Setup's `{autopf}`
-variable. The destination page is shown for both fresh installs and upgrades;
-select another folder or drive there. All-users installation requires administrator
-rights. Existing per-user installations retain their original mode and previous
-folder; the destination remains editable. `/ALLUSERS` and `/CURRENTUSER` explicitly
-select the mode for unattended installation; `/DIR="D:\Apps\Application"` selects
-a destination. Changing install scope does not remove the previous installation.
+신규 전체 사용자 설치의 기본 위치: Inno Setup `{autopf}` 변수에 따른 **Program Files**.
+관리자 권한 필요. 신규 설치·업그레이드 모두 설치 경로 화면에서 다른 드라이브·폴더 선택 가능.
+기존 사용자별 설치는 원래 설치 모드와 경로 유지. 해당 경로도 화면에서 변경 가능.
 
-Keep projects, models, exports and settings in your existing user data folders.
-Changing the destination does not move them. Copy any personal files stored beside
-the old executable before removing that old installation using its own uninstaller.
-The installer does not execute an installed application in administrative mode.
-Packaged application checks and installation lifecycle checks run separately in CI.
+무인 설치: `/ALLUSERS` 또는 `/CURRENTUSER`로 설치 모드 지정.
+`/DIR="D:\Apps\Application"`으로 설치 위치 지정.
+
+경로 변경 시 이전 폴더·사용자 설정·모델·결과 파일의 자동 이동·삭제 없음.
+이전 프로그램 옆에 저장한 개인 파일은 별도 복사할 것.
+폴더나 설치 범위를 깔끔하게 옮길 때: **개인 파일 복사 → 기존 설치의 제거 프로그램 실행 → 새 위치에 설치** 순서.
+새 위치 설치 후 이전 설치를 제거했다면, 새 설치 프로그램을 같은 새 경로로 다시 실행하여
+현재 바로가기·제거 등록을 복구할 것.
