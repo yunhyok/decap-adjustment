@@ -6,7 +6,7 @@ Windows에서 Excel의 decap 활성 상태와 부품 배치를 조정하는 한�
 
 ## 설치
 
-[최신 GitHub Release](https://github.com/yunhyok/decap-adjustment/releases/latest)의 `DecapAdjustment-1.2.2-Setup-x64.exe`를 내려받아 실행하세요. Python이나 개발 도구는 필요 없습니다.
+[최신 GitHub Release](https://github.com/yunhyok/decap-adjustment/releases/latest)의 `DecapAdjustment-1.2.3-Setup-x64.exe`를 내려받아 실행하세요. Python이나 개발 도구는 필요 없습니다.
 
 - Windows 10/11 x64. 신규 전체 사용자 설치: Program Files 기본 경로·관리자 권한 필요. 기존 사용자별 설치: 해당 모드 유지. 설치·업그레이드 화면에서 경로 변경 가능.
 - 시작 메뉴와 선택한 경우 바탕화면에 바로가기가 생성됩니다.
