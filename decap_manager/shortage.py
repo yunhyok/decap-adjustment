@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from .engine import compute, parse_expression
+from .engine import ADJUSTABLE_STATUSES, compute, effective_status, parse_expression
 
 
 def find_shortages(records, commands, aliases=None):
@@ -10,13 +10,14 @@ def find_shortages(records, commands, aliases=None):
     aliases = aliases or {}
     groups = {}
     for record in records:
-        if record["status"] not in ("Automatic", "Disabled"):
+        status = effective_status(record)
+        if status not in ADJUSTABLE_STATUSES:
             continue
         components = groups.setdefault(record["net"], {})
         item = components.setdefault(record["component"], dict(
             component=record["component"], total=0, active=0, requested_active=0))
         item["total"] += 1
-        item["active"] += record["status"] == "Automatic"
+        item["active"] += status == "Automatic"
         item["requested_active"] = item["active"]
     net_order = dict.fromkeys(command["net"] for command in commands)
     for command in commands:

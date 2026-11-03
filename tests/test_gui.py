@@ -418,6 +418,23 @@ def _quantity_setup(app, tmp_path, nets=("DEMO",)):
     return deepcopy(app.records), deepcopy(app.manual), {path: path.read_bytes() for path in paths.values()}
 
 
+def test_unknown_statuses_populate_components_nets_and_conversion_rules(app, tmp_path):
+    from openpyxl import load_workbook
+
+    _quantity_setup(app, tmp_path, ("DEMO", "OTHER"))
+    workbook = load_workbook(app.paths["refdes"])
+    for row in range(2, workbook.active.max_row + 1):
+        workbook.active.cell(row, 3).value = ("unknown", "Enabled")[row % 2]
+    workbook.save(app.paths["refdes"])
+    workbook.close()
+
+    app.reload_records()
+    assert set(app.component_input["values"]) == {"CAP_100NF", "CAP_1UF", "CAP_4U7F"}
+    assert set(app.net_list.get(0, "end")) == {"DEMO", "OTHER"}
+    assert {row["status"] for row in app.records} == {"unknown", "Enabled"}
+    assert {policy["target"] for policy in app.recommended_policies()} == {"CAP_1UF", "CAP_4U7F"}
+
+
 def _choice_with_counts(choices, expected):
     return next(choice for choice in choices
                 if {row["component"]: row["after_active"] for row in choice["summary"]} == expected)

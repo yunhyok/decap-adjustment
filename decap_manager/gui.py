@@ -14,7 +14,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 
 from . import __version__
-from .engine import compute, parse_capacitance, parse_expression
+from .engine import ADJUSTABLE_STATUSES, compute, effective_status, parse_capacitance, parse_expression
 from .excel_io import (export_results, inspect_workbook, join_distances,
                        read_commands, read_distances, read_refdes)
 from .shortage import find_shortages, shortage_choices
@@ -341,7 +341,7 @@ class App(tk.Tk):
             ttk.Button(box, text="파일 선택…", command=lambda k=kind: self.choose_file(k)).pack(side="right")
             ttk.Button(box, text="열 설정…", command=lambda k=kind: self.remap(k)).pack(side="right", padx=6)
         ttk.Button(page, text="합성 예제 불러오기", command=self.load_examples).pack(anchor="w", pady=15)
-        ttk.Label(page, text="• .xlsx 지원 · 시트/헤더/열 확인 후 불러옵니다.\n• distance는 RefDes + NET으로 연결합니다. 과거 component 이름은 사용하지 않습니다.\n• 열이 없는 명령표도 수동 지정할 수 있습니다. NET 조합 형식 예: U{site}_{channel}, {channel}/{site}\n• 기존 데이터/서식을 보존하며 component와 status 셀만 변경합니다.", justify="left").pack(anchor="w", pady=15)
+        ttk.Label(page, text="• .xlsx 지원 · 시트/헤더/열 확인 후 불러옵니다.\n• distance는 RefDes + NET으로 연결합니다. 과거 component 이름은 사용하지 않습니다.\n• NET이 있는 Decap의 unknown, enabled는 Automatic과 같은 활성 상태입니다.\n• 열이 없는 명령표도 수동 지정할 수 있습니다. NET 조합 형식 예: U{site}_{channel}, {channel}/{site}\n• 기존 데이터/서식을 보존하며 component와 status 셀만 변경합니다.", justify="left").pack(anchor="w", pady=15)
 
     def choose_file(self, kind):
         path = filedialog.askopenfilename(title="Excel 선택", filetypes=[("Excel 통합 문서", "*.xlsx")])
@@ -376,12 +376,13 @@ class App(tk.Tk):
             if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
                 self.records = []
                 raise ValueError("읽는 동안 입력 파일이 변경되었습니다. 다시 불러오세요.")
-            components = sorted({r["component"] for r in self.records if r["status"] in ("Automatic", "Disabled")})
+            adjustable = [r for r in self.records if effective_status(r) in ADJUSTABLE_STATUSES]
+            components = sorted({r["component"] for r in adjustable})
             self.capacities = {c: parse_capacitance(c) for c in components}
             self.component_input.configure(values=components)
             self.net_input.configure(values=sorted({r["net"] for r in self.records if r["net"]}))
             self.net_list.delete(0, "end")
-            for net in sorted({r["net"] for r in self.records if r["status"] in ("Automatic", "Disabled")}):
+            for net in sorted({r["net"] for r in adjustable}):
                 self.net_list.insert("end", net)
             self.reset_priority()
             self.render_policies()
@@ -539,7 +540,7 @@ class App(tk.Tk):
             self.invalidate()
 
     def render_policies(self):
-        original = {r["component"] for r in self.records if r["status"] in ("Automatic", "Disabled")}
+        original = {r["component"] for r in self.records if effective_status(r) in ADJUSTABLE_STATUSES}
         allowed = original | ({p["target"] for p in self.policies} if self.use_policies.get() else set())
         self.capacities = {c: value for c, value in self.capacities.items() if c in allowed}
         for item in self.priority_table.get_children():

@@ -65,6 +65,20 @@ class ShortageTests(unittest.TestCase):
             self.assertIn("가까운", option["description"])
         self.assertEqual([o["adjustment"]["requested_active_after"] for o in options], [24, 24, 24])
 
+    def test_unknown_and_enabled_statuses_count_as_active_for_shortage_alternatives(self):
+        rows, commands = case_24(), [command()]
+        rows.append(record(500, "UNRELATED", status="mystery"))
+        active_rows = [row for row in rows if row["status"] == "Automatic"]
+        for index, row in enumerate(active_rows):
+            row["status"] = ("unknown", "Enabled")[index % 2]
+        shortage = find_shortages(rows, commands)[0]
+        self.assertEqual((shortage["total"], shortage["active"], shortage["requested_active"], shortage["deficit"]),
+                         (24, 23, 25, 1))
+        options = self.choices(rows, commands)
+        self.assertEqual(len(options), 3)
+        self.assertEqual([option["adjustment"]["strategy"] for option in options],
+                         ["reduce_addition", "reduce_other", "reduce_other"])
+
     def test_zero_addition_removed_instead_of_invalid_zero_operation(self):
         rows, commands = [record(1)], [command(LARGE, "D+1")]
         options = self.choices(rows, commands)
@@ -136,8 +150,9 @@ class ShortageTests(unittest.TestCase):
         commands = [command(expression="D+3"), command(MID, "D-1")]
         self.assertEqual(self.choices(case_24(), commands), [])
 
-    def test_multiple_shortages_follow_command_net_order_and_exclude_enabled(self):
-        rows = case_24("A") + case_24("B", offset=100) + [record(500, "UNRELATED", status="Enabled", net="B")]
+    def test_multiple_shortages_follow_command_net_order_and_count_enabled_as_active(self):
+        rows = case_24("A") + case_24("B", offset=100)
+        next(row for row in rows if row["net"] == "B" and row["status"] == "Automatic")["status"] = "Enabled"
         commands = [command(net="B"), command(net="A")]
         shortages = find_shortages(rows, commands)
         self.assertEqual([s["net"] for s in shortages], ["B", "A"])

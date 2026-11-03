@@ -8,7 +8,15 @@ import re
 _CAPACITANCE = re.compile(
     r"(?<![A-Z0-9.])([0-9]+(?:\.[0-9]+)?)\s*([PNUM]?)([0-9]*)\s*F(?![A-Z0-9])"
 )
-_ACTIVE_STATUSES = {"Automatic", "Disabled"}
+ADJUSTABLE_STATUSES = ("Automatic", "Disabled")
+
+
+def effective_status(record):
+    """Classify NET-connected decaps without rewriting their source status."""
+    status = record.get("status")
+    if record.get("net") and isinstance(status, str) and status.casefold() in ("unknown", "enabled"):
+        return "Automatic"
+    return status
 
 
 def parse_capacitance(name):
@@ -51,7 +59,7 @@ def _counts(records):
         if not all(isinstance(value, str) for value in key):
             continue
         totals[key] += 1
-        active[key] += record.get("status") == "Automatic"
+        active[key] += effective_status(record) == "Automatic"
     return totals, active
 
 
@@ -65,8 +73,7 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
     """Calculate a preview without mutating input; any error rolls back everything.
 
     Policies and aliases are explicit exact-name mappings. No historical conversion
-    or inferred component-name matching is applied. Enabled rows are preserved when
-    outside the requested Automatic/Disabled groups.
+    or inferred component-name matching is applied.
     """
     original = [dict(record) for record in records]
     state = [dict(record) for record in original]
@@ -128,9 +135,9 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
     if issues:
         return finish(False)
     missing_distance = [f"{r['refdes']} ({r['net']})" for r in state
-                        if r["status"] in _ACTIVE_STATUSES and _invalid_distance(r)]
+                        if effective_status(r) in ADJUSTABLE_STATUSES and _invalid_distance(r)]
     if missing_distance:
-        issue("unavailable_distance", f"Automatic/Disabled {len(missing_distance)}개 자리의 distance가 없거나 잘못되었습니다. "
+        issue("unavailable_distance", f"조정 가능한 {len(missing_distance)}개 자리의 distance가 없거나 잘못되었습니다. "
               "선택 후보에 포함되면 계산을 중단합니다: " + ", ".join(missing_distance), "warning")
 
     aliases = aliases or {}
@@ -217,9 +224,10 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
         return [r for r in state if r["net"] == net and r["component"] == component]
 
     def validate_statuses(rows, context):
-        unsupported = [f"{r['refdes']}={r['status']}" for r in rows if r["status"] not in _ACTIVE_STATUSES]
+        unsupported = [f"{r['refdes']}={r['status']}" for r in rows
+                       if effective_status(r) not in ADJUSTABLE_STATUSES]
         if unsupported:
-            raise _CalculationError("unsupported_status", f"{context}: Automatic/Disabled 이외의 상태가 있습니다: {', '.join(unsupported)}")
+            raise _CalculationError("unsupported_status", f"{context}: 지원하지 않는 상태가 있습니다: {', '.join(unsupported)}")
 
     def ordered(rows, direction, context, limit=None):
         missing = [r["refdes"] for r in rows if _invalid_distance(r)]
@@ -258,7 +266,7 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
             # Reserved donors cannot be reached by lower rules because cycles were rejected.
             donor_rows += supply(donor, missing, "Disabled", command, step, "연쇄 확보 · 임시 Disabled")
         authorized[net].update((component, donor))
-        active_donors = sum(r["status"] == "Automatic" for r in donor_rows)
+        active_donors = sum(effective_status(r) == "Automatic" for r in donor_rows)
         if active_donors and not policy["compensate"]:
             raise _CalculationError("active_compensation_required", f"{context}: Automatic {donor} {active_donors}개를 변환하려면 활성 수량 보정이 필요합니다. 변환 규칙의 보정을 켜거나 Disabled 자리만 선택하세요.")
         for record in donor_rows:
@@ -288,11 +296,11 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
             for step, (direction, delta) in enumerate(command["operations"], 1):
                 count = abs(delta)
                 old_status, new_status = ("Disabled", "Automatic") if delta > 0 else ("Automatic", "Disabled")
-                eligible = ordered([r for r in group(net, component) if r["status"] == old_status],
+                eligible = ordered([r for r in group(net, component) if effective_status(r) == old_status],
                                    direction, context, count)
                 chosen = eligible[:count]
                 for record in chosen:
-                    reason = f"명령 {direction}{delta:+d} ({step}단계): {old_status} → {new_status}, 거리 {record['distance']:g}"
+                    reason = f"명령 {direction}{delta:+d} ({step}단계): {record['status']} → {new_status}, 거리 {record['distance']:g}"
                     change(record, component, new_status, "command", reason, command,
                            step=step, direction=direction, delta=delta)
                 missing = count - len(chosen)

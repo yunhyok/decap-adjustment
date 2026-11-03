@@ -9,6 +9,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
 from decap_manager import excel_io as io
+from decap_manager.engine import compute
 
 
 def make_book(path, rows, title="Data"):
@@ -59,6 +60,29 @@ def result_for(path):
                      "summary": [{"net": "N1", "component": "CAP_4U7F", "before_total": 0,
                                   "after_total": 1, "before_active": 0, "expected_active": 1, "after_active": 1}],
                      "issues": []}
+
+
+def test_active_aliases_round_trip_with_original_status_in_audit(tmp_path):
+    path = make_book(tmp_path / "refdes.xlsx", [
+        ["Component", "RefDes", "Status", "NET"],
+        ["CAP", "C1", "unknown", "N"], ["CAP", "C2", "Enabled", "N"],
+        ["CAP", "C3", "UNKNOWN", "N"], ["CAP", "C4", "Disabled", "N"],
+        ["MARK", "M1", "Enabled", None],
+    ])
+    mapping = io.inspect_workbook(path, "refdes")[0]
+    records = io.join_distances(io.read_refdes(path, mapping),
+                                {(f"C{i}", "N"): d for i, d in enumerate((10, 90, 50, 1), 1)})
+    result = compute(records, [dict(net="N", component="CAP", expression="A-1,D-1,A+1")])
+    assert result["ok"] and all(issue["level"] == "info" for issue in result["issues"])
+    summary = next(group for group in result["summary"] if group["net"] == "N")
+    assert (summary["before_active"], summary["expected_active"], summary["after_active"]) == (3, 2, 2)
+    files = io.export_results(path, mapping, result, tmp_path / "exports")
+    output = next(file for file in files if file.name == "updated_refdes.xlsx")
+    assert [r["status"] for r in io.read_refdes(output, mapping)] == [
+        "Disabled", "Disabled", "UNKNOWN", "Automatic", "Enabled"]
+    audit = json.loads((output.parent / "audit.json").read_text(encoding="utf-8"))
+    assert [(a["refdes"], a["old_status"]) for a in audit["actions"]] == [
+        ("C1", "unknown"), ("C2", "Enabled"), ("C4", "Disabled")]
 
 
 def test_shifted_headers_and_exact_join(tmp_path):

@@ -26,7 +26,8 @@ def policy(target, donor, direction="D", donor_status="Disabled", compensate=Fal
 
 
 def active(result, component, net="U1_TEST"):
-    return sum(r["component"] == component and r["net"] == net and r["status"] == "Automatic"
+    return sum(r["component"] == component and r["net"] == net
+               and r["status"].lower() in ("automatic", "unknown", "enabled")
                for r in result["records"])
 
 
@@ -137,7 +138,7 @@ class EngineTests(unittest.TestCase):
         self.assert_atomic_error(compute(records, [command()]), records, "duplicate_row")
 
     def test_unsupported_target_status_errors_but_other_rows_preserved(self):
-        records = [row(1), row(2, component="RESISTOR", status="Enabled", net="")]
+        records = [row(1), row(2, component="RESISTOR", status="Suspended", net="")]
         records[1]["distance"] = None
         result = compute(records, [command()])
         self.assertTrue(result["ok"])
@@ -206,12 +207,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(compute(records, [])["records"], records)
 
     def test_uncompensated_active_donor_is_rejected_atomically(self):
-        records = [row(1, status="Automatic")]
-        result = compute(records, [command(LARGE)], policies=[policy(LARGE, MID, donor_status="any")])
-        self.assert_atomic_error(result, records, "active_compensation_required")
-        donor_summary = next(s for s in result["summary"] if s["component"] == MID)
-        self.assertEqual(donor_summary["expected_active"], 1)
-        self.assertEqual(active(result, MID), 1)
+        for status in ("Automatic", "unknown", "enabled"):
+            with self.subTest(status=status):
+                records = [row(1, status=status)]
+                result = compute(records, [command(LARGE)], policies=[policy(LARGE, MID, donor_status="any")])
+                self.assert_atomic_error(result, records, "active_compensation_required")
+                donor_summary = next(s for s in result["summary"] if s["component"] == MID)
+                self.assertEqual(donor_summary["expected_active"], 1)
+                self.assertEqual(active(result, MID), 1)
 
     def test_compensation_preserves_previous_donor_command_target(self):
         records = [row(1), row(2), row(3), row(4, status="Automatic")]
@@ -335,7 +338,7 @@ class EngineTests(unittest.TestCase):
         rules = [policy(target, donor, donor_status="any", compensate=True)
                  for donor, target in zip(components, components[1:])]
         for case in range(160):
-            records = [row(i + 1, rng.choice(components), rng.choice(["Automatic", "Disabled"]),
+            records = [row(i + 1, rng.choice(components), rng.choice(["Automatic", "unknown", "Enabled", "Disabled", "Disabled", "Disabled"]),
                            distance=rng.randrange(10)) for i in range(rng.randrange(2, 20))]
             target_index, requested = rng.randrange(4), rng.randrange(1, 6)
             target = components[target_index]
@@ -346,7 +349,7 @@ class EngineTests(unittest.TestCase):
                 self.assertEqual(result["ok"], available >= requested, result["issues"])
                 if result["ok"]:
                     for component in components:
-                        before = sum(r["component"] == component and r["status"] == "Automatic" for r in records)
+                        before = sum(r["component"] == component and r["status"] != "Disabled" for r in records)
                         self.assertEqual(active(result, component), before + (requested if component == target else 0))
                     for old, new in zip(records, result["records"]):
                         if old["component"] not in eligible_types:
@@ -368,11 +371,11 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(reversed_result["records"], records)
 
     def test_status_travels_with_component_rearrangement(self):
-        records = [row(1, LARGE, "Automatic"), row(2, MID), row(3, LARGE), row(4, MID, "Automatic")]
+        records = [row(1, LARGE, "unknown"), row(2, MID), row(3, LARGE), row(4, MID, "ENABLED")]
         result = compute(records, [], rearrange=True, priority=[MID, LARGE], selected_nets=["U1_TEST"])
         self.assertTrue(result["ok"])
         self.assertEqual([(r["component"], r["status"]) for r in result["records"]],
-                         [(MID, "Disabled"), (MID, "Automatic"), (LARGE, "Automatic"), (LARGE, "Disabled")])
+                         [(MID, "Disabled"), (MID, "ENABLED"), (LARGE, "unknown"), (LARGE, "Disabled")])
 
     def test_rearrangement_scope_is_explicit_and_unselected_untouched(self):
         records = [row(1, LARGE), row(2, MID), row(3, SMALL), row(4, LARGE, net="U2_TEST"), row(5, MID, net="U2_TEST")]
