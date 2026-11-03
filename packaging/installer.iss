@@ -47,4 +47,4 @@ Name: "{group}\Decap Adjustment"; Filename: "{app}\DecapAdjustment.exe"; Working
 Name: "{autodesktop}\Decap Adjustment"; Filename: "{app}\DecapAdjustment.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DecapAdjustment.exe"; Tasks: desktopicon; AppUserModelID: "DecapAdjustment.Desktop.1"
 
 [Run]
-Filename: "{app}\DecapAdjustment.exe"; Description: "{cm:LaunchProgram,Decap Adjustment}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not IsAdminInstallMode
+Filename: "{app}\DecapAdjustment.exe"; Description: "{cm:LaunchProgram,Decap Adjustment}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not IsAdmin
