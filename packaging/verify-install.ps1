@@ -25,7 +25,7 @@ function Invoke-CheckedProcess([string]$File, [string[]]$Arguments) {
 $uninstaller = Join-Path $installDir 'unins000.exe'
 $installed = $false
 try {
-    Invoke-CheckedProcess $installerPath @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+    Invoke-CheckedProcess $installerPath @('/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
         "/DIR=`"$installDir`"", '/TASKS=desktopicon', "/LOG=`"$checkRoot\install.log`"")
     $installed = $true
     $executable = Join-Path $installDir 'DecapAdjustment.exe'

@@ -120,3 +120,19 @@ Windows 설치파일은 [패키징 안내](packaging/README.md)에 따라 빌드
 테스트는 합성 데이터만 사용하며 계산 규칙, 보정 실패의 원자적 취소, 변경 범위, 순서 변경, 수량 검산, 헤더 변형, 원본 XML/수식/서식 보존, 저장 실패, GUI 미리보기 무효화까지 검사합니다. 고객 Excel, 실제 NET/RefDes, 로컬 작업 로그 및 인증정보는 저장소나 설치 패키지에 포함하지 않습니다.
 
 MIT License. [외부 구성요소 고지](packaging/THIRD_PARTY_NOTICES.md). 새 아이콘은 [생성 프롬프트와 출처](assets/ICON.md)를 기록했습니다.
+
+## Windows installation paths
+
+New installations default to **Program Files** using Inno Setup's `{autopf}`
+variable. The destination page is shown for both fresh installs and upgrades;
+select another folder or drive there. All-users installation requires administrator
+rights. Existing per-user installations retain their original mode and previous
+folder; the destination remains editable. `/ALLUSERS` and `/CURRENTUSER` explicitly
+select the mode for unattended installation; `/DIR="D:\Apps\Application"` selects
+a destination. Changing install scope does not remove the previous installation.
+
+Keep projects, models, exports and settings in your existing user data folders.
+Changing the destination does not move them. Copy any personal files stored beside
+the old executable before removing that old installation using its own uninstaller.
+The installer does not execute an installed application in administrative mode.
+Packaged application checks and installation lifecycle checks run separately in CI.

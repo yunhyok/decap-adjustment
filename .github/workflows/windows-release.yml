@@ -41,6 +41,12 @@ jobs:
           if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed.' }
       - name: Test, build, install, run, and uninstall
         run: ./packaging/build.ps1
+      - name: Verify production installer paths and actual previous release upgrade
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify_install_paths.ps1 -Installer 'outputs/DecapAdjustment-1.2.1-Setup-x64.exe'
+
       - uses: actions/upload-artifact@v4
         with:
           name: DecapAdjustment-Windows-x64
@@ -55,6 +61,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          $assets = @(Get-ChildItem outputs -File | Where-Object { $_.Name -match '(-Setup-x64\.exe|\.sha256|installer-verification\.json)$' } | ForEach-Object FullName)
+          $assets = @(Get-ChildItem outputs -File | Where-Object { $_.Name -match '(-Setup-x64\.exe|\.sha256|installer-verification\.json|\.verification\.json)$' } | ForEach-Object FullName)
           gh release create $env:RELEASE_TAG @assets --verify-tag --title "Decap Adjustment $env:RELEASE_TAG" --generate-notes
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }

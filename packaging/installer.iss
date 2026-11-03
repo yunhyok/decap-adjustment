@@ -10,10 +10,13 @@ AppId={{EA39DB72-3DEB-4D60-813E-BDE33AE92D66}
 AppName=Decap Adjustment
 AppVersion={#AppVersion}
 AppPublisher=Decap Adjustment contributors
-DefaultDirName={localappdata}\Programs\Decap Adjustment
+DefaultDirName={autopf}\Decap Adjustment
 DefaultGroupName=Decap Adjustment
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
+UsePreviousPrivileges=yes
+DisableDirPage=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -44,4 +47,4 @@ Name: "{group}\Decap Adjustment"; Filename: "{app}\DecapAdjustment.exe"; Working
 Name: "{autodesktop}\Decap Adjustment"; Filename: "{app}\DecapAdjustment.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DecapAdjustment.exe"; Tasks: desktopicon; AppUserModelID: "DecapAdjustment.Desktop.1"
 
 [Run]
-Filename: "{app}\DecapAdjustment.exe"; Description: "{cm:LaunchProgram,Decap Adjustment}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\DecapAdjustment.exe"; Description: "{cm:LaunchProgram,Decap Adjustment}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not IsAdminInstallMode

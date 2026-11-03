@@ -21,8 +21,9 @@ Build logs and test installation directories stay under ignored `work/`.
 Compiler override: `./packaging/build.ps1 -Iscc 'C:\path\ISCC.exe'`.
 Python override: `./packaging/build.ps1 -Python 'C:\path\python.exe'`.
 
-The installer is per-user and requires no administrator access. Its default
-location is `%LOCALAPPDATA%\Programs\Decap Adjustment`. Users do not need Python
+The installer defaults to Program Files for new all-users installations, which
+require administrator rights. Existing per-user installations retain their mode.
+The destination page is editable for fresh installation and upgrade. Users do not need Python
 or Excel installed. Remove it through Windows Installed apps.
 
 Git tags matching `v*` run `.github/workflows/windows-release.yml`. A tag must match
