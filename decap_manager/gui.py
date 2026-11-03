@@ -1,7 +1,6 @@
 """Korean desktop workflow: map, configure, preview, export."""
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -15,17 +14,14 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 
 from . import __version__
 from .engine import ADJUSTABLE_STATUSES, compute, effective_status, parse_capacitance, parse_expression
-from .excel_io import (export_results, inspect_workbook, join_distances,
+from .excel_io import (export_results, export_spd_results, fingerprint, inspect_workbook, join_distances,
                        read_commands, read_distances, read_refdes)
 from .shortage import find_shortages, shortage_choices
+from .spd_dialog import open_spd, SpdScopeDialog
 
 
 def asset_root():
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-
-
-def fingerprint(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def table(parent, columns, height=12):
@@ -292,6 +288,7 @@ class App(tk.Tk):
         if icon.exists():
             self.iconbitmap(str(icon))
         self.paths, self.mappings, self.hashes = {}, {}, {}
+        self.spd_layout = self.spd_selection = None
         self.records, self.manual, self.aliases, self.policies = [], [], {}, []
         self.capacities = {}
         self.result = None
@@ -299,7 +296,7 @@ class App(tk.Tk):
         container = ttk.Frame(self, padding=18)
         container.pack(fill="both", expand=True)
         ttk.Label(container, text="Decap Adjustment", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(container, text="Excel 입력 → 증감 / 배치 설정 → 변경·수량 검증 → 새 파일 저장").pack(anchor="w", pady=(2, 12))
+        ttk.Label(container, text="SPD 또는 Excel 입력 → 증감 / 배치 설정 → 변경·수량 검증 → 새 파일 저장").pack(anchor="w", pady=(2, 12))
         self.tabs = ttk.Notebook(container)
         self.tabs.pack(fill="both", expand=True)
         self.pages = []
@@ -313,7 +310,7 @@ class App(tk.Tk):
         self.build_preview()
         footer = ttk.Frame(container)
         footer.pack(fill="x", pady=(12, 0))
-        self.notice = tk.StringVar(value="distance와 refdes 파일을 선택하세요. 원본은 덮어쓰지 않습니다.")
+        self.notice = tk.StringVar(value="SPD 한 개 또는 Distance·RefDes Excel 두 개를 선택하세요.")
         ttk.Label(footer, textvariable=self.notice).pack(side="left")
         self.save_button = ttk.Button(footer, text="결과 저장…", command=self.save, state="disabled")
         self.save_button.pack(side="right")
@@ -332,16 +329,76 @@ class App(tk.Tk):
 
     def build_files(self):
         page = self.pages[0]
-        for kind, title in [("distance", "① Distance Excel"), ("refdes", "② RefDes Excel"), ("commands", "③ 증감 명령 Excel (선택)")]:
-            box = ttk.LabelFrame(page, text=title, padding=14)
-            box.pack(fill="x", pady=7)
+        selector = ttk.Frame(page)
+        selector.pack(fill="x", pady=(0, 6))
+        ttk.Label(selector, text="배치 정보 입력").pack(side="left", padx=(0, 14))
+        self.source = tk.StringVar(value="excel")
+        for key, label in (("excel", "Excel 두 개"), ("spd", "SPD 한 개")):
+            ttk.Radiobutton(selector, text=label, variable=self.source, value=key,
+                            command=self.switch_source).pack(side="left", padx=4)
+        primary = ttk.Frame(page)
+        primary.pack(fill="x")
+        self.excel_panel = ttk.Frame(primary)
+        self.excel_panel.pack(fill="x")
+        self.spd_panel = ttk.LabelFrame(primary, text="SPD · RefDes와 거리", padding=12)
+        self.file_labels["spd"] = tk.StringVar(value="파일을 선택하지 않았습니다")
+        ttk.Label(self.spd_panel, textvariable=self.file_labels["spd"], wraplength=630).pack(side="left", fill="x", expand=True)
+        ttk.Button(self.spd_panel, text="SPD 선택…", command=self.choose_spd).pack(side="right")
+        self.scope_button = ttk.Button(self.spd_panel, text="거리 기준 · 대상…", state="disabled", command=self.configure_spd)
+        self.scope_button.pack(side="right", padx=6)
+        for kind, title in [("distance", "Distance Excel"), ("refdes", "RefDes Excel"), ("commands", "증감 명령 Excel (선택)")]:
+            box = ttk.LabelFrame(page if kind == "commands" else self.excel_panel, text=title, padding=10)
+            box.pack(fill="x", pady=4)
             var = tk.StringVar(value="파일을 선택하지 않았습니다")
             self.file_labels[kind] = var
             ttk.Label(box, textvariable=var, wraplength=770).pack(side="left", fill="x", expand=True)
             ttk.Button(box, text="파일 선택…", command=lambda k=kind: self.choose_file(k)).pack(side="right")
             ttk.Button(box, text="열 설정…", command=lambda k=kind: self.remap(k)).pack(side="right", padx=6)
-        ttk.Button(page, text="합성 예제 불러오기", command=self.load_examples).pack(anchor="w", pady=15)
-        ttk.Label(page, text="• .xlsx 지원 · 시트/헤더/열 확인 후 불러옵니다.\n• distance는 RefDes + NET으로 연결합니다. 과거 component 이름은 사용하지 않습니다.\n• NET이 있는 Decap의 unknown, enabled는 Automatic과 같은 활성 상태입니다.\n• 열이 없는 명령표도 수동 지정할 수 있습니다. NET 조합 형식 예: U{site}_{channel}, {channel}/{site}\n• 기존 데이터/서식을 보존하며 component와 status 셀만 변경합니다.", justify="left").pack(anchor="w", pady=15)
+        ttk.Button(page, text="합성 예제 불러오기", command=self.load_examples).pack(anchor="w", pady=8)
+        ttk.Label(page, text="SPD: 기준 부품과 조정할 커패시터 종류를 선택합니다. 같은 NET의 핀 간 거리를 µm로 계산합니다.\nExcel: 시트·헤더·열을 확인합니다. 거리와 RefDes는 RefDes + NET으로 연결합니다.\n결과는 새 폴더에 저장합니다. 입력 파일은 변경하지 않습니다.", justify="left").pack(anchor="w", pady=5)
+
+    def switch_source(self):
+        is_spd = self.source.get() == "spd"
+        new = self.spd_panel if is_spd else self.excel_panel
+        if new.winfo_manager():
+            return
+        old = self.excel_panel if is_spd else self.spd_panel
+        old.pack_forget()
+        new.pack(fill="x", pady=4)
+        for kind in ("refdes", "distance", "spd"):
+            self.paths.pop(kind, None)
+            self.mappings.pop(kind, None)
+            self.hashes.pop(kind, None)
+            self.file_labels[kind].set("파일을 선택하지 않았습니다")
+        self.spd_layout = self.spd_selection = None
+        self.scope_button.configure(state="disabled")
+        self.show_records([])
+        self.notice.set("SPD 파일을 선택하세요." if is_spd else "Distance·RefDes Excel 파일을 선택하세요.")
+
+    def choose_spd(self):
+        path = filedialog.askopenfilename(title="Cadence Sigrity SPD 선택", filetypes=[("텍스트 SPD", "*.spd")])
+        if path:
+            self.configure_spd(path)
+
+    def configure_spd(self, path=None):
+        try:
+            layout = open_spd(self, path) if path else self.spd_layout
+            choice = SpdScopeDialog(self, layout, None if path else self.spd_selection).result
+            if not choice:
+                return
+            reference, targets, records = choice
+            if path:
+                self.paths["spd"] = str(path)
+            self.spd_layout, self.spd_selection = layout, (reference, targets)
+            self.hashes["spd"] = layout.source_hash
+            self.scope_button.configure(state="normal")
+            skipped = sum(layout.components[t] for t in targets) - len(records)
+            self.file_labels["spd"].set(f"{Path(self.paths['spd']).name}\n기준: {reference} · 대상 {len(targets)}종 · "
+                                        f"{len(records):,}자리 · 미연결 제외 {skipped:,}자리 · µm")
+            self.show_records(records)
+            return True
+        except Exception as exc:
+            messagebox.showerror("SPD 불러오기", str(exc), parent=self)
 
     def choose_file(self, kind):
         path = filedialog.askopenfilename(title="Excel 선택", filetypes=[("Excel 통합 문서", "*.xlsx")])
@@ -362,6 +419,9 @@ class App(tk.Tk):
                 self.invalidate()
                 if kind == "commands":
                     self.mode.set("excel")
+                    self.hashes[kind] = fingerprint(path)
+                    if self.source.get() == "spd":
+                        return
                 self.reload_records()
         except Exception as exc:
             messagebox.showerror("파일 불러오기", str(exc), parent=self)
@@ -376,22 +436,31 @@ class App(tk.Tk):
             if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
                 self.records = []
                 raise ValueError("읽는 동안 입력 파일이 변경되었습니다. 다시 불러오세요.")
-            adjustable = [r for r in self.records if effective_status(r) in ADJUSTABLE_STATUSES]
-            components = sorted({r["component"] for r in adjustable})
-            self.capacities = {c: parse_capacitance(c) for c in components}
-            self.component_input.configure(values=components)
-            self.net_input.configure(values=sorted({r["net"] for r in self.records if r["net"]}))
-            self.net_list.delete(0, "end")
-            for net in sorted({r["net"] for r in adjustable}):
-                self.net_list.insert("end", net)
-            self.reset_priority()
-            self.render_policies()
-            self.notice.set(f"{len(self.records):,}개 RefDes를 불러왔습니다. 명령과 배치 범위를 설정하세요.")
+        self.show_records(self.records)
+
+    def show_records(self, records):
+        self.records = records
+        self.change_table.heading("distance", text="거리 (µm)" if self.source.get() == "spd" else "Distance")
+        adjustable = [r for r in records if effective_status(r) in ADJUSTABLE_STATUSES]
+        components = sorted({r["component"] for r in adjustable})
+        self.capacities = {c: parse_capacitance(c) for c in components}
+        self.component_input.configure(values=components)
+        self.net_input.configure(values=sorted({r["net"] for r in records if r["net"]}))
+        self.net_list.delete(0, "end")
+        for net in sorted({r["net"] for r in adjustable}):
+            self.net_list.insert("end", net)
+        self.reset_priority()
+        self.render_policies()
+        self.notice.set(f"{len(records):,}개 RefDes를 불러왔습니다. 명령과 배치 범위를 설정하세요.")
 
     def load_examples(self):
         try:
             directory = asset_root() / "examples"
             names = {"distance": "distance.xlsx", "refdes": "refdes.xlsx", "commands": "commands.xlsx"}
+            if self.source.get() == "spd":
+                if not self.configure_spd(directory / "board.spd"):
+                    return
+                names = {"commands": "commands.xlsx"}
             for kind, name in names.items():
                 path = directory / name
                 candidates = inspect_workbook(path, kind)
@@ -401,7 +470,10 @@ class App(tk.Tk):
                 self.file_labels[kind].set(name)
             self.mode.set("excel")
             self.invalidate()
-            self.reload_records()
+            if self.source.get() == "spd":
+                self.hashes["commands"] = fingerprint(self.paths["commands"])
+            else:
+                self.reload_records()
         except Exception as exc:
             messagebox.showerror("예제", str(exc), parent=self)
 
@@ -651,8 +723,8 @@ class App(tk.Tk):
     def preview(self):
         self.invalidate()
         try:
-            if not all(k in self.paths for k in ("distance", "refdes")) or not self.records:
-                raise ValueError("distance와 refdes 파일을 먼저 불러오세요.")
+            if not self.records or not ("spd" in self.paths or {"distance", "refdes"} <= self.paths.keys()):
+                raise ValueError("SPD 한 개 또는 Distance·RefDes Excel 두 개를 먼저 불러오세요.")
             if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
                 raise ValueError("입력 파일이 변경되었습니다. 파일을 다시 불러오세요.")
             if self.mode.get() == "excel":
@@ -792,7 +864,10 @@ class App(tk.Tk):
             if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
                 self.invalidate()
                 raise ValueError("미리보기 이후 입력 파일이 변경되었습니다. 다시 불러와 계산하세요.")
-            paths = export_results(self.paths["refdes"], self.mappings["refdes"], self.result, directory)
+            if "spd" in self.paths:
+                paths = export_spd_results(self.paths["spd"], self.spd_layout, *self.spd_selection, self.result, directory)
+            else:
+                paths = export_results(self.paths["refdes"], self.mappings["refdes"], self.result, directory)
             self.notice.set(f"저장 완료: {Path(paths[0]).parent}")
             messagebox.showinfo("저장 완료", "\n".join(str(p) for p in paths), parent=self)
         except Exception as exc:

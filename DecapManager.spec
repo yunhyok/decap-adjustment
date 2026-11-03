@@ -14,7 +14,7 @@ version_tuple = tuple(int(part) for part in version.split('.')) + (0,)
 datas = [(str(root / 'assets'), 'assets'),
          (str(root / 'LICENSE'), '.'), (str(root / 'README.md'), '.'),
          (str(root / 'packaging' / 'THIRD_PARTY_NOTICES.md'), '.')]
-for filename in ('refdes.xlsx', 'distance.xlsx', 'commands.xlsx', 'commands_tall.xlsx'):
+for filename in ('refdes.xlsx', 'distance.xlsx', 'commands.xlsx', 'commands_tall.xlsx', 'board.spd'):
     datas.append((str(root / 'examples' / filename), 'examples'))
 for package in ('openpyxl', 'et_xmlfile', 'pillow', 'pyinstaller'):
     dist = distribution(package)

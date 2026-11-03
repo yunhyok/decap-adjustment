@@ -28,17 +28,30 @@ def generate(directory=None):
     refdes = [["Component", "RefDes Name", "Activation Status", "Net Name", "User note"]]
     distances = [["Synthetic example: distance uses exact RefDes + NET"], [], ["REFDES", "NET Name", "Distance [um]", "Component type"]]
     components = ["CAP_0603M_10NF", "CAP_0603M_100NF", "CAP_0603M_1UF", "CAP_0603M_4U7F"]
+    nodes, connections, references = [], [], []
     index = 1
     for site in (0, 1):
+        net = f"U{site}_DEMO_VDD"
+        x0 = site * 2000
+        nodes.append(f"NodeD{site}!!P::{net} X = {x0}um Y = 0um")
+        references.append(f".Connect SITE{site} DEMO_DUT\nP $Package.NodeD{site}!!P::{net}\n.EndC")
         for part, component in enumerate(components):
             for slot in range(4):
                 ref = f"C{index}"
-                net = f"U{site}_DEMO_VDD"
                 status = "Automatic" if slot < 2 else "Disabled"
+                distance = (part + 1) * 100 + slot * 10
                 refdes.append([component, ref, status, net, "Fictional fixture"])
-                distances.append([ref, net, (part + 1) * 100 + slot * 10, "CAP_OLD_NAME"])
+                distances.append([ref, net, distance, "CAP_OLD_NAME"])
+                nodes += [f"Node{index}P!!1::{net} X = {x0 + distance}um Y = 0um",
+                          f"Node{index}G!!2::DGND X = {x0 + distance}um Y = 40um"]
+                usage = " Usage = 0b111000" if status == "Disabled" else ""
+                connections.append(f".Connect {ref} {component}{usage}\n1 $Package.Node{index}P!!1::{net}\n2 $Package.Node{index}G!!2::DGND\n.EndC")
                 index += 1
     refdes.append(["ALIGN_MARK", "M1", "Enabled", None, "Must remain unchanged"])
+    (directory / "board.spd").write_text("\n".join([
+        "* Synthetic distance and RefDes example", ".Package $Package", *nodes, ".EndPackage",
+        *connections, ".Connect M1 ALIGN_MARK Usage = 0b1000\n.EndC", *references, ""
+    ]), encoding="utf-8")
     save(directory / "refdes.xlsx", "RefDes", refdes)
     save(directory / "distance.xlsx", "Ranked Caps", distances, header_row=3)
     save(directory / "commands.xlsx", "Adjustments", [

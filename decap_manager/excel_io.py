@@ -329,8 +329,7 @@ def _patch_cells(xml, replacements):
     return patched
 
 
-def _verified_replacements(source_path, mapping, result):
-    originals = read_refdes(source_path, mapping)
+def _verified_changes(originals, result):
     final = result.get("records", [])
     if len(originals) != len(final):
         raise ValueError("결과의 물리 자리 수가 원본과 다릅니다.")
@@ -351,7 +350,7 @@ def _verified_replacements(source_path, mapping, result):
             value = _text(new.get(field), f"{row}행 {field}")
             if value != original[field]:
                 changed_rows.add(row)
-                replacements[f"{get_column_letter(mapping['columns'][field])}{row}"] = value
+                replacements[row, field] = value
         if row in changed_rows:
             change = changes_by_row.get(row, {})
             expected = {"refdes": original["refdes"], "net": original["net"], "old_component": original["component"],
@@ -405,35 +404,26 @@ def _write_reports(directory, result):
         workbook.save(directory / "component_changes.xlsx")
         workbook.close()
     audit = {name: result.get(name, []) for name in ("ok", "changes", "actions", "summary", "issues")}
+    if "spd_source" in result:
+        audit["spd_source"] = result["spd_source"]
     (directory / "audit.json").write_text(json.dumps(audit, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
-def export_results(source_path, mapping, result, output_dir):
-    """Commit a complete new output folder, or remove all staged files on failure."""
+def fingerprint(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _export_folder(output_dir, result, write_updated, source_path, expected_hash):
     if result.get("ok") is not True or any(issue.get("level") == "error" for issue in result.get("issues", [])):
         raise ValueError("검증 오류가 있는 결과는 저장할 수 없습니다.")
-    source_path = Path(source_path).resolve(strict=True)
-    if source_path.suffix.lower() != ".xlsx":
-        raise ValueError("원본 보존 저장은 .xlsx 파일을 지원합니다.")
-    source_bytes = source_path.read_bytes()
-    replacements = _verified_replacements(BytesIO(source_bytes), mapping, result)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".decap-staging-", dir=output_dir))
     try:
-        with ZipFile(BytesIO(source_bytes)) as source:
-            names = source.namelist()
-            if len(names) != len(set(names)):
-                raise ValueError("원본 ZIP에 중복 파일이 있습니다.")
-            target = _sheet_member(source, mapping["sheet"])
-            original_xml = source.read(target)
-            patched_xml = _patch_cells(original_xml, replacements) if replacements else original_xml
-            with ZipFile(staging / "updated_refdes.xlsx", "w") as destination:
-                destination.comment = source.comment
-                for info in source.infolist():
-                    destination.writestr(info, patched_xml if info.filename == target else source.read(info.filename))
+        write_updated(staging / "updated_refdes.xlsx")
         _write_reports(staging, result)
-        if hashlib.sha256(source_path.read_bytes()).digest() != hashlib.sha256(source_bytes).digest():
+        if fingerprint(source_path) != expected_hash:
             raise ValueError("저장 중 원본 파일이 변경되었습니다. 다시 불러온 후 미리보기를 확인하세요.")
         final = output_dir / ("decap_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:8])
         if final.exists():
@@ -443,3 +433,61 @@ def export_results(source_path, mapping, result, output_dir):
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def export_results(source_path, mapping, result, output_dir):
+    source_path = Path(source_path).resolve(strict=True)
+    if source_path.suffix.lower() != ".xlsx":
+        raise ValueError("원본 보존 저장은 .xlsx 파일을 지원합니다.")
+    source_bytes = source_path.read_bytes()
+
+    def write_updated(path):
+        changes = _verified_changes(read_refdes(BytesIO(source_bytes), mapping), result)
+        replacements = {f"{get_column_letter(mapping['columns'][field])}{row}": value
+                        for (row, field), value in changes.items()}
+        with ZipFile(BytesIO(source_bytes)) as source:
+            names = source.namelist()
+            if len(names) != len(set(names)):
+                raise ValueError("원본 ZIP에 중복 파일이 있습니다.")
+            target = _sheet_member(source, mapping["sheet"])
+            original_xml = source.read(target)
+            patched_xml = _patch_cells(original_xml, replacements) if replacements else original_xml
+            with ZipFile(path, "w") as destination:
+                destination.comment = source.comment
+                for info in source.infolist():
+                    destination.writestr(info, patched_xml if info.filename == target else source.read(info.filename))
+
+    return _export_folder(output_dir, result, write_updated, source_path, hashlib.sha256(source_bytes).hexdigest())
+
+
+def export_spd_results(source_path, layout, reference, targets, result, output_dir):
+    source = {"file": Path(source_path).name, "sha256": layout.source_hash, "reference_component": reference,
+              "target_components": sorted(targets), "distance_unit": "µm"}
+
+    def write_updated(path):
+        originals = layout.records(reference, targets)
+        source["unconnected_targets"] = sum(layout.components[t] for t in targets) - len(originals)
+        changes = _verified_changes(originals, result)
+        book = Workbook()
+        refs = book.active
+        refs.title = "RefDes"
+        refs.append(["Component", "RefDes Name", "Activation Status", "Net Name"])
+        distances = book.create_sheet("Cap Distance")
+        distances.append(["RefDes", "Net Name", "Distance [um]"])
+        for record in layout.inventory:
+            row = record["row"]
+            for i, field in enumerate(("component", "refdes", "status", "net"), 1):
+                refs.cell(row, i, changes.get((row, field), record[field])).data_type = "s"
+        for row, record in enumerate(originals, 2):
+            distances.cell(row, 1, record["refdes"]).data_type = "s"
+            distances.cell(row, 2, record["net"]).data_type = "s"
+            distances.cell(row, 3, record["distance"])
+        for sheet, widths in ((refs, (36, 22, 20, 32)), (distances, (22, 32, 20))):
+            sheet.freeze_panes = "A2"
+            sheet.auto_filter.ref = sheet.dimensions
+            for i, width in enumerate(widths, 1):
+                sheet.column_dimensions[get_column_letter(i)].width = width
+        book.save(path)
+        book.close()
+
+    return _export_folder(output_dir, {**result, "spd_source": source}, write_updated, source_path, layout.source_hash)

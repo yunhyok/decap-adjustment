@@ -7,7 +7,8 @@ from openpyxl import load_workbook
 
 from . import __version__
 from .engine import compute
-from .excel_io import export_results, inspect_workbook, join_distances, read_commands, read_distances, read_refdes
+from .excel_io import export_results, export_spd_results, inspect_workbook, join_distances, read_commands, read_distances, read_refdes
+from .spd import read_spd
 
 
 def self_test():
@@ -21,6 +22,13 @@ def self_test():
     assert result["ok"], result["issues"]
     assert result["changes"], "Synthetic commands must cause changes"
     assert all(s["expected_active"] == s["after_active"] for s in result["summary"])
+    board = directory / "board.spd"
+    layout = read_spd(board)
+    targets = [name for name in layout.components if name.startswith("CAP_")]
+    spd_records = layout.records("DEMO_DUT", targets)
+    assert spd_records == [record for record in records if record["component"] in targets]
+    spd_result = compute(spd_records, commands)
+    assert spd_result["ok"] and spd_result["changes"] == result["changes"]
     source_hash = fingerprint(paths["refdes"])
     with tempfile.TemporaryDirectory(prefix="decap-selftest-") as temporary:
         outputs = export_results(paths["refdes"], mappings["refdes"], result, temporary)
@@ -35,6 +43,15 @@ def self_test():
             if path.suffix == ".xlsx":
                 workbook = load_workbook(path, read_only=True)
                 workbook.close()
+        spd_outputs = export_spd_results(board, layout, "DEMO_DUT", targets, spd_result, temporary)
+        book = load_workbook(next(p for p in spd_outputs if p.name == "updated_refdes.xlsx"), read_only=True)
+        try:
+            assert book["RefDes"].max_row == len(layout.inventory) + 1
+            assert list(book["Cap Distance"].values)[1:] == [(r["refdes"], r["net"], r["distance"]) for r in spd_records]
+            assert list(book["RefDes"].values)[1:len(spd_records)+1] == [
+                (r["component"], r["refdes"], r["status"], r["net"]) for r in spd_result["records"]]
+        finally:
+            book.close()
     assert source_hash == fingerprint(paths["refdes"])
     app = App()
     try:
@@ -53,4 +70,4 @@ def self_test():
     finally:
         app.destroy()
     return {"ok": True, "version": __version__, "rows": len(records), "commands": len(commands),
-            "changed_refdes": len(result["changes"]), "checks": ["read", "calculate", "counts", "export", "reopen", "source-preservation", "gui-preview", "preview-invalidation"]}
+            "changed_refdes": len(result["changes"]), "checks": ["read", "calculate", "counts", "export", "reopen", "source-preservation", "gui-preview", "preview-invalidation", "spd-excel-parity", "spd-export"]}

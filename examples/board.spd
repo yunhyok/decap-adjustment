@@ -1,0 +1,205 @@
+* Synthetic distance and RefDes example
+.Package $Package
+NodeD0!!P::U0_DEMO_VDD X = 0um Y = 0um
+Node1P!!1::U0_DEMO_VDD X = 100um Y = 0um
+Node1G!!2::DGND X = 100um Y = 40um
+Node2P!!1::U0_DEMO_VDD X = 110um Y = 0um
+Node2G!!2::DGND X = 110um Y = 40um
+Node3P!!1::U0_DEMO_VDD X = 120um Y = 0um
+Node3G!!2::DGND X = 120um Y = 40um
+Node4P!!1::U0_DEMO_VDD X = 130um Y = 0um
+Node4G!!2::DGND X = 130um Y = 40um
+Node5P!!1::U0_DEMO_VDD X = 200um Y = 0um
+Node5G!!2::DGND X = 200um Y = 40um
+Node6P!!1::U0_DEMO_VDD X = 210um Y = 0um
+Node6G!!2::DGND X = 210um Y = 40um
+Node7P!!1::U0_DEMO_VDD X = 220um Y = 0um
+Node7G!!2::DGND X = 220um Y = 40um
+Node8P!!1::U0_DEMO_VDD X = 230um Y = 0um
+Node8G!!2::DGND X = 230um Y = 40um
+Node9P!!1::U0_DEMO_VDD X = 300um Y = 0um
+Node9G!!2::DGND X = 300um Y = 40um
+Node10P!!1::U0_DEMO_VDD X = 310um Y = 0um
+Node10G!!2::DGND X = 310um Y = 40um
+Node11P!!1::U0_DEMO_VDD X = 320um Y = 0um
+Node11G!!2::DGND X = 320um Y = 40um
+Node12P!!1::U0_DEMO_VDD X = 330um Y = 0um
+Node12G!!2::DGND X = 330um Y = 40um
+Node13P!!1::U0_DEMO_VDD X = 400um Y = 0um
+Node13G!!2::DGND X = 400um Y = 40um
+Node14P!!1::U0_DEMO_VDD X = 410um Y = 0um
+Node14G!!2::DGND X = 410um Y = 40um
+Node15P!!1::U0_DEMO_VDD X = 420um Y = 0um
+Node15G!!2::DGND X = 420um Y = 40um
+Node16P!!1::U0_DEMO_VDD X = 430um Y = 0um
+Node16G!!2::DGND X = 430um Y = 40um
+NodeD1!!P::U1_DEMO_VDD X = 2000um Y = 0um
+Node17P!!1::U1_DEMO_VDD X = 2100um Y = 0um
+Node17G!!2::DGND X = 2100um Y = 40um
+Node18P!!1::U1_DEMO_VDD X = 2110um Y = 0um
+Node18G!!2::DGND X = 2110um Y = 40um
+Node19P!!1::U1_DEMO_VDD X = 2120um Y = 0um
+Node19G!!2::DGND X = 2120um Y = 40um
+Node20P!!1::U1_DEMO_VDD X = 2130um Y = 0um
+Node20G!!2::DGND X = 2130um Y = 40um
+Node21P!!1::U1_DEMO_VDD X = 2200um Y = 0um
+Node21G!!2::DGND X = 2200um Y = 40um
+Node22P!!1::U1_DEMO_VDD X = 2210um Y = 0um
+Node22G!!2::DGND X = 2210um Y = 40um
+Node23P!!1::U1_DEMO_VDD X = 2220um Y = 0um
+Node23G!!2::DGND X = 2220um Y = 40um
+Node24P!!1::U1_DEMO_VDD X = 2230um Y = 0um
+Node24G!!2::DGND X = 2230um Y = 40um
+Node25P!!1::U1_DEMO_VDD X = 2300um Y = 0um
+Node25G!!2::DGND X = 2300um Y = 40um
+Node26P!!1::U1_DEMO_VDD X = 2310um Y = 0um
+Node26G!!2::DGND X = 2310um Y = 40um
+Node27P!!1::U1_DEMO_VDD X = 2320um Y = 0um
+Node27G!!2::DGND X = 2320um Y = 40um
+Node28P!!1::U1_DEMO_VDD X = 2330um Y = 0um
+Node28G!!2::DGND X = 2330um Y = 40um
+Node29P!!1::U1_DEMO_VDD X = 2400um Y = 0um
+Node29G!!2::DGND X = 2400um Y = 40um
+Node30P!!1::U1_DEMO_VDD X = 2410um Y = 0um
+Node30G!!2::DGND X = 2410um Y = 40um
+Node31P!!1::U1_DEMO_VDD X = 2420um Y = 0um
+Node31G!!2::DGND X = 2420um Y = 40um
+Node32P!!1::U1_DEMO_VDD X = 2430um Y = 0um
+Node32G!!2::DGND X = 2430um Y = 40um
+.EndPackage
+.Connect C1 CAP_0603M_10NF
+1 $Package.Node1P!!1::U0_DEMO_VDD
+2 $Package.Node1G!!2::DGND
+.EndC
+.Connect C2 CAP_0603M_10NF
+1 $Package.Node2P!!1::U0_DEMO_VDD
+2 $Package.Node2G!!2::DGND
+.EndC
+.Connect C3 CAP_0603M_10NF Usage = 0b111000
+1 $Package.Node3P!!1::U0_DEMO_VDD
+2 $Package.Node3G!!2::DGND
+.EndC
+.Connect C4 CAP_0603M_10NF Usage = 0b111000
+1 $Package.Node4P!!1::U0_DEMO_VDD
+2 $Package.Node4G!!2::DGND
+.EndC
+.Connect C5 CAP_0603M_100NF
+1 $Package.Node5P!!1::U0_DEMO_VDD
+2 $Package.Node5G!!2::DGND
+.EndC
+.Connect C6 CAP_0603M_100NF
+1 $Package.Node6P!!1::U0_DEMO_VDD
+2 $Package.Node6G!!2::DGND
+.EndC
+.Connect C7 CAP_0603M_100NF Usage = 0b111000
+1 $Package.Node7P!!1::U0_DEMO_VDD
+2 $Package.Node7G!!2::DGND
+.EndC
+.Connect C8 CAP_0603M_100NF Usage = 0b111000
+1 $Package.Node8P!!1::U0_DEMO_VDD
+2 $Package.Node8G!!2::DGND
+.EndC
+.Connect C9 CAP_0603M_1UF
+1 $Package.Node9P!!1::U0_DEMO_VDD
+2 $Package.Node9G!!2::DGND
+.EndC
+.Connect C10 CAP_0603M_1UF
+1 $Package.Node10P!!1::U0_DEMO_VDD
+2 $Package.Node10G!!2::DGND
+.EndC
+.Connect C11 CAP_0603M_1UF Usage = 0b111000
+1 $Package.Node11P!!1::U0_DEMO_VDD
+2 $Package.Node11G!!2::DGND
+.EndC
+.Connect C12 CAP_0603M_1UF Usage = 0b111000
+1 $Package.Node12P!!1::U0_DEMO_VDD
+2 $Package.Node12G!!2::DGND
+.EndC
+.Connect C13 CAP_0603M_4U7F
+1 $Package.Node13P!!1::U0_DEMO_VDD
+2 $Package.Node13G!!2::DGND
+.EndC
+.Connect C14 CAP_0603M_4U7F
+1 $Package.Node14P!!1::U0_DEMO_VDD
+2 $Package.Node14G!!2::DGND
+.EndC
+.Connect C15 CAP_0603M_4U7F Usage = 0b111000
+1 $Package.Node15P!!1::U0_DEMO_VDD
+2 $Package.Node15G!!2::DGND
+.EndC
+.Connect C16 CAP_0603M_4U7F Usage = 0b111000
+1 $Package.Node16P!!1::U0_DEMO_VDD
+2 $Package.Node16G!!2::DGND
+.EndC
+.Connect C17 CAP_0603M_10NF
+1 $Package.Node17P!!1::U1_DEMO_VDD
+2 $Package.Node17G!!2::DGND
+.EndC
+.Connect C18 CAP_0603M_10NF
+1 $Package.Node18P!!1::U1_DEMO_VDD
+2 $Package.Node18G!!2::DGND
+.EndC
+.Connect C19 CAP_0603M_10NF Usage = 0b111000
+1 $Package.Node19P!!1::U1_DEMO_VDD
+2 $Package.Node19G!!2::DGND
+.EndC
+.Connect C20 CAP_0603M_10NF Usage = 0b111000
+1 $Package.Node20P!!1::U1_DEMO_VDD
+2 $Package.Node20G!!2::DGND
+.EndC
+.Connect C21 CAP_0603M_100NF
+1 $Package.Node21P!!1::U1_DEMO_VDD
+2 $Package.Node21G!!2::DGND
+.EndC
+.Connect C22 CAP_0603M_100NF
+1 $Package.Node22P!!1::U1_DEMO_VDD
+2 $Package.Node22G!!2::DGND
+.EndC
+.Connect C23 CAP_0603M_100NF Usage = 0b111000
+1 $Package.Node23P!!1::U1_DEMO_VDD
+2 $Package.Node23G!!2::DGND
+.EndC
+.Connect C24 CAP_0603M_100NF Usage = 0b111000
+1 $Package.Node24P!!1::U1_DEMO_VDD
+2 $Package.Node24G!!2::DGND
+.EndC
+.Connect C25 CAP_0603M_1UF
+1 $Package.Node25P!!1::U1_DEMO_VDD
+2 $Package.Node25G!!2::DGND
+.EndC
+.Connect C26 CAP_0603M_1UF
+1 $Package.Node26P!!1::U1_DEMO_VDD
+2 $Package.Node26G!!2::DGND
+.EndC
+.Connect C27 CAP_0603M_1UF Usage = 0b111000
+1 $Package.Node27P!!1::U1_DEMO_VDD
+2 $Package.Node27G!!2::DGND
+.EndC
+.Connect C28 CAP_0603M_1UF Usage = 0b111000
+1 $Package.Node28P!!1::U1_DEMO_VDD
+2 $Package.Node28G!!2::DGND
+.EndC
+.Connect C29 CAP_0603M_4U7F
+1 $Package.Node29P!!1::U1_DEMO_VDD
+2 $Package.Node29G!!2::DGND
+.EndC
+.Connect C30 CAP_0603M_4U7F
+1 $Package.Node30P!!1::U1_DEMO_VDD
+2 $Package.Node30G!!2::DGND
+.EndC
+.Connect C31 CAP_0603M_4U7F Usage = 0b111000
+1 $Package.Node31P!!1::U1_DEMO_VDD
+2 $Package.Node31G!!2::DGND
+.EndC
+.Connect C32 CAP_0603M_4U7F Usage = 0b111000
+1 $Package.Node32P!!1::U1_DEMO_VDD
+2 $Package.Node32G!!2::DGND
+.EndC
+.Connect M1 ALIGN_MARK Usage = 0b1000
+.EndC
+.Connect SITE0 DEMO_DUT
+P $Package.NodeD0!!P::U0_DEMO_VDD
+.EndC
+.Connect SITE1 DEMO_DUT
+P $Package.NodeD1!!P::U1_DEMO_VDD
+.EndC
