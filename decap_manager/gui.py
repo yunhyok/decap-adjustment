@@ -50,19 +50,28 @@ def unused_name(directory, stem, suffix):
     return candidate
 
 
-def table(parent, columns, height=12):
+def table(parent, columns, height=12, *, grid=None, xscroll=True):
+    """A scrollable tree. It is packed to fill the parent unless ``grid`` gives grid options.
+
+    Lists with a few short columns pass ``xscroll=False`` to give that height to their rows.
+    """
     frame = ttk.Frame(parent)
-    frame.pack(fill="both", expand=True, pady=4)
+    if grid is None:
+        frame.pack(fill="both", expand=True, pady=4)
+    else:
+        frame.grid(sticky="nsew", pady=4, **grid)
     tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="headings", height=height)
     for key, label, width in columns:
         tree.heading(key, text=label)
         tree.column(key, width=px(parent, width), minwidth=px(parent, 65), stretch=True)
     y = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-    x = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
-    tree.configure(yscrollcommand=y.set, xscrollcommand=x.set)
+    tree.configure(yscrollcommand=y.set)
     tree.grid(row=0, column=0, sticky="nsew")
     y.grid(row=0, column=1, sticky="ns")
-    x.grid(row=1, column=0, sticky="ew")
+    if xscroll:
+        x = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+        tree.configure(xscrollcommand=x.set)
+        x.grid(row=1, column=0, sticky="ew")
     frame.columnconfigure(0, weight=1)
     frame.rowconfigure(0, weight=1)
     return tree
@@ -78,28 +87,32 @@ class QuantityShortageDialog(tk.Toplevel):
         self.shortage, self.choices = shortage, choices
         panel = ttk.Frame(self, padding=18)
         panel.pack(fill="both", expand=True)
-        ttk.Label(panel, text=shortage["net"], font=(FONT_FAMILY, 14, "bold")).pack(anchor="w")
+        panel.columnconfigure(0, weight=1)
+        # Only the two lists carry weight, so a short screen shrinks them and never the buttons.
+        panel.rowconfigure(2, weight=1)
+        panel.rowconfigure(4, weight=1)
+        ttk.Label(panel, text=shortage["net"], font=(FONT_FAMILY, 14, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(panel, text=f"조정 가능한 자리 {shortage['total']}개 · 현재 활성 {shortage['active']}개 · "
-                             f"명령 적용 시 {shortage['requested_active']}개 → {shortage['deficit']}개 초과").pack(anchor="w", pady=8)
+                             f"명령 적용 시 {shortage['requested_active']}개 → {shortage['deficit']}개 초과").grid(row=1, column=0, sticky="w", pady=8)
         self.amounts = table(panel, [("component", "부품", 290), ("total", "현재 자리", 100),
                                      ("active", "현재 활성", 100), ("requested", "원래 명령 적용", 130),
-                                     ("adjusted", "선택안 적용", 130)], 4)
+                                     ("adjusted", "선택안 적용", 130)], 4, grid=dict(row=2, column=0))
         for row in shortage["components"]:
             self.amounts.insert("", "end", values=(row["component"], row["total"], row["active"], row["requested_active"], "—"))
-        ttk.Label(panel, text="조정안을 선택하세요. 다른 용량을 줄이는 안은 가까운 Automatic 자리부터 감소합니다.").pack(anchor="w", pady=(12, 4))
-        self.choices_table = table(panel, [("label", "조정안", 850)], 4)
+        ttk.Label(panel, text="조정안을 선택하세요. 다른 용량을 줄이는 안은 가까운 Automatic 자리부터 감소합니다.").grid(row=3, column=0, sticky="w", pady=(12, 4))
+        self.choices_table = table(panel, [("label", "조정안", 850)], 4, grid=dict(row=4, column=0))
         self.choices_table.configure(selectmode="browse")
         for index, choice in enumerate(choices):
             self.choices_table.insert("", "end", iid=str(index), values=(choice["label"],))
         self.choices_table.bind("<<TreeviewSelect>>", self.select_choice)
         self.detail = tk.StringVar(value="선택한 NET의 계산을 통과한 대안만 표시합니다." if choices else
                                  "자동으로 제안할 수 있는 조정안이 없습니다. 명령과 변환 규칙을 직접 확인하세요.")
-        ttk.Label(panel, textvariable=self.detail, wraplength=px(self, 800), justify="left").pack(fill="x", pady=10)
+        ttk.Label(panel, textvariable=self.detail, wraplength=px(self, 800), justify="left").grid(row=5, column=0, sticky="ew", pady=10)
         ttk.Label(panel, text="명령 목록은 변경하지 않습니다. 선택은 이번 계산에만 적용되며 다시 계산하면 다시 선택합니다.\n"
                               "필요한 연쇄 규칙을 확인하고 전체 NET·재배치 검증을 통과해야 결과를 적용할 수 있습니다.",
-                  wraplength=px(self, 800), justify="left").pack(fill="x", pady=6)
+                  wraplength=px(self, 800), justify="left").grid(row=6, column=0, sticky="ew", pady=6)
         buttons = ttk.Frame(panel)
-        buttons.pack(fill="x", pady=(10, 0))
+        buttons.grid(row=7, column=0, sticky="ew", pady=(10, 0))
         self.apply_button = ttk.Button(buttons, text="선택안으로 다시 계산", command=self.accept, state="disabled")
         self.apply_button.pack(side="right")
         ttk.Button(buttons, text="취소", command=self.destroy).pack(side="right", padx=8)
@@ -155,18 +168,21 @@ class MappingDialog(tk.Toplevel):
             "sheet": self.book.sheetnames[0], "header_row": 1, "columns": {}})
         main = ttk.Frame(self, padding=16)
         main.pack(fill="both", expand=True)
-        ttk.Label(main, text=Path(path).name, font=(FONT_FAMILY, 12, "bold")).pack(anchor="w")
-        ttk.Label(main, text="자동 감지 결과를 확인하세요. 열은 A, B 또는 1, 2 형식으로 수정할 수 있습니다.").pack(anchor="w", pady=6)
+        main.columnconfigure(0, weight=1)
+        # Rows are placed by number; only the cell preview (and, less, the wide list) may shrink,
+        # so a short screen never pushes the confirm buttons out of the dialog.
+        ttk.Label(main, text=Path(path).name, font=(FONT_FAMILY, 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(main, text="자동 감지 결과를 확인하세요. 열은 A, B 또는 1, 2 형식으로 수정할 수 있습니다.").grid(row=1, column=0, sticky="w", pady=6)
         if detection_error:
-            ttk.Label(main, text=detection_error, wraplength=px(self, 780)).pack(anchor="w")
+            ttk.Label(main, text=detection_error, wraplength=px(self, 780)).grid(row=2, column=0, sticky="w")
         if len(self.candidates) > 1:
             self.candidate_choice = ttk.Combobox(main, state="readonly", values=[
                 f"{m['sheet']} · 헤더 {m['header_row']}행" for m in self.candidates])
-            self.candidate_choice.pack(fill="x", pady=4)
+            self.candidate_choice.grid(row=3, column=0, sticky="ew", pady=4)
             self.candidate_choice.current(0)
             self.candidate_choice.bind("<<ComboboxSelected>>", self.apply_candidate)
         top = ttk.Frame(main)
-        top.pack(fill="x")
+        top.grid(row=4, column=0, sticky="ew")
         self.sheet = tk.StringVar(value=selected["sheet"])
         self.header = tk.IntVar(value=selected["header_row"])
         ttk.Label(top, text="시트").pack(side="left")
@@ -174,18 +190,19 @@ class MappingDialog(tk.Toplevel):
         ttk.Label(top, text="헤더 행").pack(side="left")
         ttk.Spinbox(top, textvariable=self.header, from_=1, to=1048576, width=7).pack(side="left", padx=8)
         ttk.Button(top, text="행 미리보기", command=self.refresh).pack(side="left")
-        ttk.Label(main, text="셀 미리보기 · 열 경계를 끌어 너비 조절 / 가로 스크롤로 오른쪽 열 확인").pack(anchor="w", pady=(6, 0))
-        self.samples = table(main, [], 5)
+        ttk.Label(main, text="셀 미리보기 · 열 경계를 끌어 너비 조절 / 가로 스크롤로 오른쪽 열 확인").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        main.rowconfigure(6, weight=3)
+        self.samples = table(main, [], 5, grid=dict(row=6, column=0))
         self.samples.tag_configure("header", background="#353a42", foreground="#eceef1", font=(FONT_FAMILY, 10, "bold"))
         self.samples.bind("<ButtonRelease-1>", self.show_preview_cell)
         detail = ttk.Frame(main)
-        detail.pack(fill="x")
+        detail.grid(row=7, column=0, sticky="ew")
         self.cell_address = tk.StringVar(value="셀 선택")
         self.cell_value = tk.StringVar()
         ttk.Label(detail, textvariable=self.cell_address, width=9).pack(side="left")
         ttk.Entry(detail, textvariable=self.cell_value, state="readonly").pack(side="left", fill="x", expand=True)
         form = ttk.Frame(main)
-        form.pack(fill="x", pady=8)
+        form.grid(row=8, column=0, sticky="ew", pady=8)
         self.fields = {}
         for i, (key, label) in enumerate(self.FIELDS[kind]):
             ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", pady=3)
@@ -197,14 +214,15 @@ class MappingDialog(tk.Toplevel):
         if kind == "commands":
             ttk.Label(form, text="NET 조합 형식").grid(row=5, column=0, sticky="w")
             ttk.Entry(form, textvariable=self.template, width=35).grid(row=5, column=1, sticky="w", padx=12)
-            ttk.Label(main, text="가로 명령표: 부품명 = 열 (한 줄에 하나). 세로 표에서는 비워 두세요.").pack(anchor="w")
+            ttk.Label(main, text="가로 명령표: 부품명 = 열 (한 줄에 하나). 세로 표에서는 비워 두세요.").grid(row=9, column=0, sticky="w")
+            main.rowconfigure(10, weight=1)
             self.wide = tk.Text(main, height=5, font=(FONT_FAMILY, 10))
-            self.wide.pack(fill="x")
+            self.wide.grid(row=10, column=0, sticky="nsew")
             for comp, col in selected.get("component_columns", {}).items():
                 self.wide.insert("end", f"{comp} = {get_column_letter(col)}\n")
         buttons = ttk.Frame(main)
-        buttons.pack(fill="x", pady=10)
-        ttk.Button(buttons, text="이 설정 사용", command=self.accept).pack(side="right")
+        buttons.grid(row=11, column=0, sticky="ew", pady=10)
+        ttk.Button(buttons, text="이 설정 사용", command=self.accept, style="Primary.TButton").pack(side="right")
         ttk.Button(buttons, text="취소", command=self.destroy).pack(side="right", padx=8)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.bind("<Escape>", lambda _event: self.destroy())
@@ -313,7 +331,7 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"Decap Adjustment {__version__}")
         apply_theme(self)
-        fit_window(self, 1220, 900, 900, 640)
+        fit_window(self, 1220, 900, 900, 680)
         icon = asset_root() / "assets" / "app.ico"
         if icon.exists():
             try:
@@ -324,6 +342,7 @@ class App(tk.Tk):
         self.paths, self.hashes = {}, {}
         self.spd_layout = self.spd_selection = None
         self.records, self.manual, self.aliases, self.policies = [], [], {}, []
+        self._pristine_manual = []
         self.capacities, self.board_geometry = {}, {}
         self.metadata_overrides = {}
         self.result = None
@@ -537,6 +556,7 @@ class App(tk.Tk):
         self.board_geometry = geometry
         self.metadata_overrides = {}
         self.manual, self.aliases, self.policies = [], {}, []
+        self._pristine_manual = []
         self.alias_label.set("등록된 별칭 없음")
         self.rearrange.set(False)
         self.use_policies.set(False)
@@ -557,7 +577,6 @@ class App(tk.Tk):
         self._saved_state = deepcopy(self._last_state)
         self._tracking = True
         self.update_history_menu()
-        self.set_preview_message("계산 전입니다. 검증을 통과한 결과만 적용할 수 있습니다.")
         self.notice.set(f"{len(records):,}개 decap을 불러왔습니다. 거리 단위: µm")
 
     def show_records(self, records):
@@ -583,6 +602,7 @@ class App(tk.Tk):
             self.render_commands()
             self.invalidate()
             # The bundled commands are the example's starting point, not unsaved user work.
+            self._pristine_manual = deepcopy(self.manual)
             self._last_state = self.snapshot()
             self._saved_state = deepcopy(self._last_state)
             self._tracking = True
@@ -593,25 +613,20 @@ class App(tk.Tk):
 
     def build_commands(self):
         page = self.pages[1]
-        # The action row is packed first so a short window shrinks the tables, not the buttons.
-        box = ttk.Frame(page)
-        box.pack(side="bottom", fill="x", pady=(5, 0))
-        self.alias_label = tk.StringVar(value="등록된 별칭 없음")
-        ttk.Button(box, text="별칭 편집…", command=self.edit_aliases).pack(side="right")
-        self.preview_button = ttk.Button(box, text="계산 · 미리보기", command=self.preview, style="Primary.TButton")
-        self.preview_button.pack(side="right", padx=8)
-        alias = ttk.Label(box, textvariable=self.alias_label, justify="left")
-        alias.pack(side="left", fill="x", expand=True)
-        alias.bind("<Configure>", lambda event: alias.configure(wraplength=max(event.width - 4, 100)))
+        # Only the two tables carry weight: a short window shrinks them evenly and never
+        # pushes the entry row or the action buttons out of view.
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(1, weight=1)
+        page.rowconfigure(4, weight=1)
         search = ttk.Frame(page)
-        search.pack(fill="x")
+        search.grid(row=0, column=0, sticky="ew")
         ttk.Label(search, text="채널 / SITE / NET / 부품 검색").pack(side="left")
         self.scope_search = tk.StringVar()
         ttk.Entry(search, textvariable=self.scope_search).pack(side="left", fill="x", expand=True, padx=8)
         ttk.Button(search, text="명령 Excel 가져오기…", command=self.import_commands).pack(side="right")
         self.scope_table = table(page, [("site", "SITE", 90), ("channel", "채널 / NET", 210),
                                       ("component", "Component", 250), ("active", "활성", 65),
-                                      ("disabled", "비활성", 65), ("total", "전체", 65)], 3)
+                                      ("disabled", "비활성", 65), ("total", "전체", 65)], 3, grid=dict(row=1, column=0))
         self.scope_table.configure(selectmode="browse")
         self.scope_table.bind("<<TreeviewSelect>>", self.select_scope)
         # Double-click or Enter moves straight to typing the command for the chosen row.
@@ -619,9 +634,9 @@ class App(tk.Tk):
             self.scope_table.bind(event, lambda _event: self.expression_input.focus_set())
         self.scope_search.trace_add("write", lambda *_: self.refresh_scope())
         ttk.Label(page, text="위 표에서 행을 선택한 뒤 명령을 입력하세요.   A: 가까운 순 · D: 먼 순  |  +N: 활성화 · -N: 비활성화  |  예: A-2,D+1",
-                  style="Muted.TLabel").pack(anchor="w", pady=(8, 4))
+                  style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 4))
         row = ttk.Frame(page)
-        row.pack(fill="x")
+        row.grid(row=3, column=0, sticky="ew")
         self.net_input = ttk.Combobox(row, width=22)
         self.component_input = ttk.Combobox(row, width=28)
         self.expression_input = ttk.Entry(row, width=16)
@@ -632,10 +647,20 @@ class App(tk.Tk):
         ttk.Button(row, text="추가", command=self.add_command).grid(row=1, column=3, padx=2)
         ttk.Button(row, text="선택 수정", command=self.edit_command).grid(row=1, column=4, padx=2)
         ttk.Button(row, text="선택 삭제", command=self.delete_commands).grid(row=1, column=5, padx=2)
-        self.command_table = table(page, [("net", "NET", 210), ("component", "Component", 260), ("expression", "명령", 180)], 3)
+        self.command_table = table(page, [("net", "NET", 210), ("component", "Component", 260), ("expression", "명령", 180)], 3,
+                                   grid=dict(row=4, column=0))
         self.command_table.bind("<<TreeviewSelect>>", self.select_command)
         self.command_table.bind("<Delete>", lambda event: self.delete_commands())
         self.expression_input.bind("<Return>", lambda event: self.add_command())
+        box = ttk.Frame(page)
+        box.grid(row=5, column=0, sticky="ew", pady=(5, 0))
+        self.alias_label = tk.StringVar(value="등록된 별칭 없음")
+        ttk.Button(box, text="별칭 편집…", command=self.edit_aliases).pack(side="right")
+        self.preview_button = ttk.Button(box, text="계산 · 미리보기", command=self.preview, style="Primary.TButton")
+        self.preview_button.pack(side="right", padx=8)
+        alias = ttk.Label(box, textvariable=self.alias_label, justify="left")
+        alias.pack(side="left", fill="x", expand=True)
+        alias.bind("<Configure>", lambda event: alias.configure(wraplength=max(event.width - 4, 100)))
 
     def refresh_scope(self):
         if not hasattr(self, "scope_table"):
@@ -821,13 +846,13 @@ class App(tk.Tk):
         self.details.configure(state="disabled")
 
     def invalidate(self, *_):
-        had_result = self.result is not None
         self.result = None
         if hasattr(self, "apply_button"):
             self.apply_button.configure(state="disabled")
         if hasattr(self, "change_table"):
-            if had_result or self.change_table.get_children() or self.summary_table.get_children():
-                self.set_preview_message("입력이 바뀌었습니다. '계산 · 미리보기'로 다시 계산하세요.")
+            # Every invalidation resets the headline: an older result, apply or error text
+            # would otherwise describe a state that an edit or an undo has just replaced.
+            self.set_preview_message("계산 전입니다. '계산 · 미리보기'로 현재 상태를 계산하세요.")
             for tree in (self.change_table, self.summary_table):
                 tree.delete(*tree.get_children())
             self.write_details()
@@ -897,12 +922,23 @@ class App(tk.Tk):
 
     def build_layout(self):
         page = self.pages[2]
+        # Both sections carry weight so a short window shrinks them together; with pack the
+        # upper one kept its full height and the rule list below collapsed to nothing.
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(1, weight=1)
+        page.rowconfigure(2, weight=1)
+        # The explanation shares the checkbox line and the rule buttons share theirs: on a
+        # 768-pixel-high screen every saved line is a visible list row.
+        head = ttk.Frame(page)
+        head.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.rearrange = tk.BooleanVar(value=False)
-        ttk.Checkbutton(page, text="명령 처리 후 부품·상태 재배치", variable=self.rearrange, command=self.invalidate).pack(anchor="w")
-        ttk.Label(page, text="용량/우선순위에 따라 Component와 Status 쌍을 이동합니다. 선택 NET·부품만 대상이며 비활성 자리도 포함합니다.",
-                  style="Muted.TLabel", wraplength=px(self, 900), justify="left").pack(anchor="w", pady=5)
+        ttk.Checkbutton(head, text="명령 처리 후 부품·상태 재배치", variable=self.rearrange, command=self.invalidate).pack(side="left")
+        note = ttk.Label(head, text="용량/우선순위에 따라 Component와 Status 쌍을 이동합니다. 선택 NET·부품만 대상이며 비활성 자리도 포함합니다.",
+                         style="Muted.TLabel", justify="left")
+        note.pack(side="left", fill="x", expand=True, padx=(14, 0))
+        note.bind("<Configure>", lambda event: note.configure(wraplength=max(event.width - 4, 100)))
         upper = ttk.Frame(page)
-        upper.pack(fill="both", expand=True)
+        upper.grid(row=1, column=0, sticky="nsew")
         left = ttk.LabelFrame(upper, text="재배치 대상 NET (Ctrl/Shift로 선택)", padding=8)
         left.pack(side="left", fill="both", expand=True, padx=(0, 10))
         net_buttons = ttk.Frame(left)
@@ -923,18 +959,18 @@ class App(tk.Tk):
         for text, command in [("↑", lambda: self.move_priority(-1)), ("↓", lambda: self.move_priority(1)),
                               ("용량 수정", self.edit_capacity), ("제외", self.exclude_priority), ("용량순 초기화", self.reset_priority)]:
             ttk.Button(buttons, text=text, command=command).pack(side="left", padx=2)
-        self.priority_table = table(right, [("component", "Component", 240), ("capacity", "용량", 110)], 3)
+        self.priority_table = table(right, [("component", "Component", 240), ("capacity", "용량", 110)], 3, xscroll=False)
         self.priority_table.configure(selectmode="browse")
         lower = ttk.LabelFrame(page, text="부족한 + 명령의 연쇄 변환 규칙 (같은 NET · 작은 용량순 권장)", padding=8)
-        lower.pack(fill="both", expand=True, pady=(12, 0))
+        lower.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         self.use_policies = tk.BooleanVar(value=False)
-        ttk.Checkbutton(lower, text="아래 변환 규칙 사용 (새 부품은 규칙을 켜면 배치 목록에도 추가)", variable=self.use_policies, command=self.render_policies).pack(anchor="w")
-        buttons = ttk.Frame(lower)
-        buttons.pack(side="bottom", fill="x")
-        ttk.Button(buttons, text="용량순 연쇄 규칙 채우기", command=self.suggest_policies).pack(side="left")
-        ttk.Button(buttons, text="규칙 추가…", command=self.add_policy).pack(side="left", padx=6)
-        ttk.Button(buttons, text="선택 규칙 삭제", command=self.remove_policy).pack(side="left")
-        self.policy_table = table(lower, [("target", "추가할 부품", 200), ("donor", "가져올 부품", 200), ("rule", "자리 선택 / 보정", 350)], 2)
+        bar = ttk.Frame(lower)
+        bar.pack(side="top", fill="x")
+        ttk.Checkbutton(bar, text="아래 변환 규칙 사용 (새 부품은 배치 목록에도 추가)", variable=self.use_policies, command=self.render_policies).pack(side="left")
+        ttk.Button(bar, text="선택 규칙 삭제", command=self.remove_policy).pack(side="right")
+        ttk.Button(bar, text="규칙 추가…", command=self.add_policy).pack(side="right", padx=6)
+        ttk.Button(bar, text="용량순 연쇄 규칙 채우기", command=self.suggest_policies).pack(side="right")
+        self.policy_table = table(lower, [("target", "추가할 부품", 200), ("donor", "가져올 부품", 200), ("rule", "자리 선택 / 보정", 350)], 2, xscroll=False)
 
     def select_all_nets(self):
         self.net_list.selection_set(0, "end")
@@ -1089,7 +1125,7 @@ class App(tk.Tk):
         top.pack(fill="x", pady=(2, 6))
         self.apply_button = ttk.Button(top, text="명령 결과 적용 · 두 탭에 반영", command=self.apply_preview, state="disabled", style="Primary.TButton")
         self.apply_button.pack(side="right", padx=(12, 0))
-        self.preview_label = tk.StringVar(value="계산 전입니다. 검증을 통과한 결과만 적용할 수 있습니다.")
+        self.preview_label = tk.StringVar(value="계산 전입니다. '계산 · 미리보기'로 현재 상태를 계산하세요.")
         headline = ttk.Label(top, textvariable=self.preview_label, font=(FONT_FAMILY, 12, "bold"), justify="left")
         headline.pack(side="left", fill="x", expand=True)
         headline.bind("<Configure>", lambda event: headline.configure(wraplength=max(event.width - 4, 100)))
@@ -1316,8 +1352,10 @@ class App(tk.Tk):
                                                   component_metadata=overrides))
             self._save_directory = Path(saved).parent
             self._saved_state = self.snapshot()
-            # Pending instructions are not persisted by an SPD document.
-            self._saved_state["manual"] = []
+            # Pending instructions are not persisted by an SPD document, so a queue the user
+            # built still counts as unsaved; the untouched commands of a bundled example do not.
+            if self.manual != self._pristine_manual:
+                self._saved_state["manual"] = []
             self.notice.set(f"저장 완료: {saved}")
             messagebox.showinfo("SPD 저장 완료", f"{saved}\n\n원본 SPD는 보존했습니다. 이 창의 작업은 계속 원본 기준입니다.\n"
                                 "저장한 파일에서 이어서 작업하려면 그 파일을 여세요.", parent=self)

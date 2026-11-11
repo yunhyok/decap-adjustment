@@ -63,7 +63,8 @@ def _capacity_text(value):
 
 def _natural(text):
     """Sort C2 before C10."""
-    return [int(part) if part.isdigit() else part.casefold() for part in _NATURAL.split(str(text))]
+    # isdecimal, not isdigit: "²" is a digit that int() cannot read.
+    return [(0, int(part), "") if part.isdecimal() else (1, 0, part.casefold()) for part in _NATURAL.split(str(text))]
 
 
 def _search_text(value):
@@ -368,7 +369,8 @@ class BoardView(ttk.Frame):
             index = _COLUMNS.index(column)
             key = lambda ref: _natural(self._values[ref][index])
             present = [ref for ref in refs if self._values[ref][index] != "—"]
-        missing = [ref for ref in refs if ref not in set(present)]
+        kept = set(present)
+        missing = [ref for ref in refs if ref not in kept]
         return sorted(present, key=key, reverse=descending) + missing
 
     def _sort_by(self, column):

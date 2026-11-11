@@ -36,11 +36,19 @@ def fit_window(window, width, height, min_width, min_height, parent=None):
 
 
 def _over_parent(window, parent, width, height):
-    """Centre on the parent, kept inside the whole desktop (the parent may be on another monitor)."""
+    """Centre on the parent, kept inside the whole desktop (the parent may be on another monitor).
+
+    A geometry position names the outer frame while the size names the client area, so the
+    dialog's own title bar is allowed for: centring on the parent's client area would push a
+    dialog as tall as the parent below it, under the taskbar.
+    """
     left, top = window.winfo_vrootx(), window.winfo_vrooty()
     right, bottom = left + window.winfo_vrootwidth(), top + window.winfo_vrootheight()
+    frame_top = parent.winfo_y()
+    decoration = max(0, parent.winfo_rooty() - frame_top)  # title bar and menu; at least a title bar
+    outer_height = decoration + parent.winfo_height()
     x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
-    y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+    y = frame_top + max(0, (outer_height - (height + decoration)) // 2)
     return max(left, min(x, right - width)), max(top, min(y, bottom - height))
 
 

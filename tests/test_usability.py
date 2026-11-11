@@ -412,3 +412,168 @@ def test_board_lists_distance_sorts_and_keeps_the_reference_in_view():
         assert len(pads) == 2
     finally:
         root.destroy()
+
+
+def _walk(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _walk(child)
+
+
+def _buttons_inside(dialog):
+    dialog.update()
+    buttons = [widget for widget in _walk(dialog) if isinstance(widget, ttk.Button)]
+    assert buttons
+    return all(button.winfo_viewable() and button.winfo_height() >= button.winfo_reqheight()
+               and button.winfo_rooty() + button.winfo_height() <= dialog.winfo_rooty() + dialog.winfo_height()
+               for button in buttons)
+
+
+@needs_display
+def test_dialog_buttons_survive_a_screen_shorter_than_the_content(monkeypatch):
+    from decap_manager.gui import MappingDialog, QuantityShortageDialog
+    from decap_manager.theme import apply_theme
+    root = tk.Tk()
+    root.withdraw()
+    apply_theme(root)
+    seen = {}
+
+    def wait_window(dialog, *_args, **_kwargs):
+        try:
+            dialog.transient("")
+            dialog.update()
+            # Well below what the content asks for, as on a 768-pixel-high or scaled display.
+            height = round(dialog.winfo_reqheight() * 0.8)
+            dialog.geometry(f"{dialog.winfo_reqwidth()}x{height}+0+0")
+            dialog.deiconify()
+            seen[type(dialog).__name__] = _buttons_inside(dialog), height < dialog.winfo_reqheight()
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+    monkeypatch.setattr(tk.Toplevel, "wait_window", wait_window)
+    shortage = dict(net="SYNTHETIC", total=16, active=8, requested_active=17, deficit=1,
+                    components=[dict(component=f"CAP_{index}", total=4, active=2, requested_active=2) for index in range(4)])
+    choices = [dict(label=f"Choice {index}", description="설명 " * 40, commands=[], adjustment={}, summary=[]) for index in range(3)]
+    try:
+        MappingDialog(root, EXAMPLE.with_name("commands.xlsx"), "commands")
+        QuantityShortageDialog(root, shortage, choices)
+    finally:
+        root.destroy()
+    assert seen == {"MappingDialog": (True, True), "QuantityShortageDialog": (True, True)}
+
+
+@needs_display
+def test_stacked_lists_share_a_short_window_instead_of_one_collapsing(example):
+    app = example
+    app.suggest_policies()
+    app.use_policies.set(True)
+    app.render_policies()
+    assert len(app.policy_table.get_children()) == 3
+    from decap_manager.theme import px
+    width, height = app.minsize()
+    app.deiconify()
+    app.geometry(f"{width}x{height}+0+0")
+    row = int(ttk.Style(app).lookup("Treeview", "rowheight"))
+    # A display too short for the design minimum (768 pixels at 125 %) cannot promise whole rows.
+    roomy = height >= px(app, 660)
+    for page, lists in ((1, (app.scope_table, app.command_table)), (2, (app.priority_table, app.policy_table))):
+        app.command_tabs.select(app.pages[page])
+        app.update()
+        heights = [tree.winfo_height() for tree in lists]
+        # Shared: packed one after the other, the first list kept its size and the second got none.
+        assert max(heights) - min(heights) <= 2 * row, (page, heights)
+        if roomy:
+            # A heading plus at least one whole row of every list.
+            assert all(tree.winfo_viewable() and size >= 2 * row for tree, size in zip(lists, heights)), (page, heights)
+    assert _fully_inside(app, app.save_button)
+
+
+@needs_display
+def test_headline_does_not_describe_a_state_that_undo_replaced(example, monkeypatch):
+    app = example
+    app.preview()
+    app.apply_preview()
+    assert "적용 완료" in app.preview_label.get()
+    app.undo()
+    assert app.manual and "적용 완료" not in app.preview_label.get() and "계산 전" in app.preview_label.get()
+    errors = []
+    monkeypatch.setattr("decap_manager.gui.messagebox.showerror", lambda title, message, **k: errors.append(message))
+    app.manual = []
+    app.render_commands()
+    app.invalidate()
+    app.preview()
+    assert errors and "입력 오류" in app.preview_label.get()
+    app.net_list.selection_set(0)
+    app.invalidate()
+    assert "입력 오류" not in app.preview_label.get()
+
+
+@needs_display
+def test_untouched_example_commands_are_not_unsaved_work_after_saving(example, monkeypatch, tmp_path):
+    app = example
+    prompts = []
+    monkeypatch.setattr("decap_manager.gui.messagebox.askyesno", lambda title, *a, **k: prompts.append(title) or True)
+    targets = iter((tmp_path / "first.spd", tmp_path / "second.spd"))
+    monkeypatch.setattr("decap_manager.gui.filedialog.asksaveasfilename", lambda **k: str(next(targets)))
+    app.save()
+    assert prompts == ["적용된 상태 저장"]
+    assert app.confirm_discard() and prompts == ["적용된 상태 저장"]
+
+    app.command_table.selection_set("0")
+    app.delete_commands()
+    app.save()
+    assert app.confirm_discard()
+    assert prompts == ["적용된 상태 저장", "적용된 상태 저장", "작업 변경"]
+
+
+def test_natural_sort_key_accepts_digit_like_characters():
+    from decap_manager.board_view import _natural
+    names = ["C10", "C2", "C1²", "C1", "①"]
+    assert sorted(names, key=_natural)[:3] == ["C1", "C1²", "C2"]
+    assert sorted(["NET_B", "net_a", "7"], key=_natural) == ["7", "net_a", "NET_B"]
+
+
+@needs_display
+def test_sorting_many_rows_stays_fast():
+    import time
+    from decap_manager.board_view import BoardView
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        view = BoardView(root, lambda *_: None)
+        refs = [f"C{index}" for index in range(20_000)]
+        view._searchable = {ref: ("", None, float(index % 977) if index % 3 else None) for index, ref in enumerate(refs)}
+        view._sort = ("distance", True)
+        started = time.perf_counter()
+        ordered = view._sorted(refs)
+        elapsed = time.perf_counter() - started
+    finally:
+        root.destroy()
+    assert len(ordered) == len(refs) and view._searchable[ordered[0]][2] == 976
+    assert all(view._searchable[ref][2] is None for ref in ordered[-6_667:])
+    # Rebuilding the lookup set per row took over twenty seconds here.
+    assert elapsed < 2
+
+
+def test_dialog_position_allows_for_its_own_title_bar():
+    from decap_manager.theme import _over_parent
+    desktop = SimpleNamespace(winfo_vrootx=lambda: 0, winfo_vrooty=lambda: 0,
+                              winfo_vrootwidth=lambda: 1366, winfo_vrootheight=lambda: 768)
+
+    def parent(y, height):
+        # A 31-pixel title bar and a 20-pixel menu above the client area.
+        return SimpleNamespace(winfo_y=lambda: y, winfo_rooty=lambda: y + 51, winfo_rootx=lambda: 81,
+                               winfo_width=lambda: 1220, winfo_height=lambda: height)
+
+    # As tall as the parent's client area: aligned with the parent's frame, not pushed below it.
+    assert _over_parent(desktop, parent(0, 672), 1000, 672) == (191, 0)
+    # A small dialog is centred over the parent including its title bar.
+    x, y = _over_parent(desktop, parent(40, 600), 400, 200)
+    assert x == 491 and 40 < y < 40 + 51 + 600 - 200 - 51
+    # A parent on a monitor to the left keeps its dialog there.
+    left = SimpleNamespace(winfo_vrootx=lambda: -1920, winfo_vrooty=lambda: 0,
+                           winfo_vrootwidth=lambda: 3286, winfo_vrootheight=lambda: 1080)
+    other = SimpleNamespace(winfo_y=lambda: 100, winfo_rooty=lambda: 151, winfo_rootx=lambda: -1500,
+                            winfo_width=lambda: 1220, winfo_height=lambda: 800)
+    assert _over_parent(left, other, 400, 300)[0] == -1090
