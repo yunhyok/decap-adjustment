@@ -1108,6 +1108,8 @@ class App(tk.Tk):
                               (self.summary_table, ("before_total", "after_total", "before_active", "expected_active", "after_active"))):
             for column in numeric:
                 tree.column(column, anchor="e")
+        # The reason column is wider than the view; a centred heading would sit off-screen.
+        self.change_table.heading("reason", anchor="w")
         self.details = tk.Text(details, wrap="word", font=(FONT_FAMILY, 10), height=6, state="disabled",
                                relief="flat", padx=10, pady=8)
         self.details.tag_configure("error", foreground="#f0a8a0")
