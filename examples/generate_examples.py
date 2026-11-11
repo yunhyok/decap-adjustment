@@ -30,16 +30,25 @@ def generate(directory=None):
     index = 1
     for site in (0, 1):
         net = f"U{site}_DEMO_VDD"
-        x0 = site * 2000
-        nodes.append(f"NodeD{site}!!P::{net} X = {x0}um Y = 0um Layer = Signal$TOP")
-        references.append(f".Connect SITE{site} DEMO_DUT\nP $Package.NodeD{site}!!P::{net}\n.EndC")
+        x0 = site * 12000
+        layer = "TOP" if site == 0 else "BOTTOM"
+        # Reference: a 3 x 3 pad array at 0.8 mm pitch; the centre pad is the supply pin.
+        pads = []
+        for row in (-1, 0, 1):
+            for column in (-1, 0, 1):
+                pin, pad_net = ("P", net) if row == column == 0 else (f"G{len(pads) + 1}", "DGND")
+                nodes.append(f"NodeD{site}{pin}!!{pin}::{pad_net} X = {x0 + column * 800}um Y = {row * 800}um Layer = Signal$TOP")
+                pads.append(f"{pin} $Package.NodeD{site}{pin}!!{pin}::{pad_net}")
+        references.append(f".Connect SITE{site} DEMO_DUT\n" + "\n".join(pads) + "\n.EndC")
+        # 0603M bodies (0.6 x 0.3 mm) on a 0.7 x 1.0 mm grid beside the reference: one row
+        # per part type, each slot farther from the supply pin than the previous one.
         for part, component in enumerate(components):
             for slot in range(4):
                 ref = f"C{index}"
                 status = "Automatic" if slot < 2 else "Disabled"
-                distance = (part + 1) * 100 + slot * 10
-                nodes += [f"Node{index}P!!1::{net} X = {x0 + distance}um Y = 0um Layer = Signal${'TOP' if site == 0 else 'BOTTOM'}",
-                          f"Node{index}G!!2::DGND X = {x0 + distance}um Y = 40um Layer = Signal${'TOP' if site == 0 else 'BOTTOM'}"]
+                x, y = x0 + 1900 + slot * 700, -(600 + part * 1000)
+                nodes += [f"Node{index}P!!1::{net} X = {x}um Y = {y}um Layer = Signal${layer}",
+                          f"Node{index}G!!2::DGND X = {x}um Y = {y - 400}um Layer = Signal${layer}"]
                 usage = " Usage = 0b111000" if status == "Disabled" else ""
                 connections.append(f".Connect {ref} {component}{usage}\n1 $Package.Node{index}P!!1::{net}\n2 $Package.Node{index}G!!2::DGND\n.EndC")
                 index += 1

@@ -1,4 +1,4 @@
-# Windows 설치 프로그램 빌드 · v2.0.0
+# Windows 설치 프로그램 빌드 · v2.1.0
 
 ## 빌드 환경
 
@@ -41,10 +41,14 @@ Inno Setup은 빌드 스크립트가 공식 릴리스 파일을 내려받고 SHA
 - 제거: Windows 설정의 설치된 앱.
 - 설치 프로그램은 서명되지 않음. Windows SmartScreen이 알 수 없는 앱 경고를 표시할 수 있음.
 
-앱 v2.0.0은 SPD를 열어 상태·배치를 편집하고 새 SPD로 저장함. `.xlsx`는 증감 명령 가져오기에만 사용하며, 별도 검증·감사 Excel 보고서는 생성하지 않음.
+앱 v2.1.0은 SPD를 열어 상태·배치를 편집하고 새 SPD로 저장함. `.xlsx`는 증감 명령 가져오기에만 사용하며, 별도 검증·감사 Excel 보고서는 생성하지 않음.
 
 ## 릴리스 검증
 
 `v*` Git 태그 push 시 `.github/workflows/windows-release.yml`이 테스트·패키징·설치·실행·제거를 검증함. 태그 버전은 `pyproject.toml`의 버전과 일치해야 함. 성공 시 설치 프로그램, SHA-256 파일, 검증 요약을 GitHub Release에 게시.
+
+태그를 직접 push하지 않는 경우 GitHub Actions의 **Windows release → Run workflow**에서 기본 브랜치를 고르고 `publish`를 켜면, 같은 검증을 거친 뒤 그 커밋에 `v<버전>` 태그를 만들어 게시함. 이미 있는 태그는 거부함.
+
+릴리스 본문은 `packaging/release-notes/v<버전>.md`가 있으면 그 파일을 사용하고, 없으면 커밋 목록으로 자동 생성함. 설치 경로 검증의 업그레이드 대상(직전 릴리스)은 `scripts/installer-paths.json`에 지정.
 
 재현 가능한 빌드는 고정된 도구와 절차를 뜻함. 타임스탬프와 Windows 도구 체인 차이로 바이너리 바이트까지 같다는 보장은 없음. Windows on ARM과 다른 Windows 버전은 검증하지 않음.

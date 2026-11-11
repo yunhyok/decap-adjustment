@@ -4,6 +4,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Tag this commit as v<version> and publish the release (default branch only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -24,11 +29,24 @@ jobs:
         env:
           BUILD_REF: ${{ github.ref }}
           BUILD_TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
           if ($env:BUILD_REF.StartsWith('refs/tags/') -and $env:BUILD_TAG -ne "v$version") {
             throw "Tag must equal v$version."
           }
+          if ($env:PUBLISH -eq 'true') {
+            # A manual run may publish only the default branch, and never over an existing tag.
+            if ($env:BUILD_REF -ne "refs/heads/$env:DEFAULT_BRANCH") {
+              throw "Manual publishing is allowed only from $env:DEFAULT_BRANCH."
+            }
+            gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/v$version" *> $null
+            if ($LASTEXITCODE -eq 0) { throw "Tag v$version already exists." }
+            $global:LASTEXITCODE = 0
+          }
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install pinned Inno Setup compiler
         run: |
           $compiler = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
@@ -58,11 +76,17 @@ jobs:
             outputs/installer-verification.json
           if-no-files-found: error
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish == true
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_REF: ${{ github.ref }}
+          BUILD_SHA: ${{ github.sha }}
         run: |
           $assets = @(Get-ChildItem outputs -File | Where-Object { $_.Name -match '(-Setup-x64\.exe|\.sha256|installer-verification\.json|\.verification\.json)$' } | ForEach-Object FullName)
-          gh release create $env:RELEASE_TAG @assets --verify-tag --title "Decap Adjustment $env:RELEASE_TAG" --generate-notes
+          $arguments = @($env:RELEASE_TAG) + $assets + @('--title', "Decap Adjustment $env:RELEASE_TAG")
+          # Hand-written notes for this version take precedence over the generated commit list.
+          $notes = "packaging/release-notes/$env:RELEASE_TAG.md"
+          if (Test-Path -LiteralPath $notes) { $arguments += @('--notes-file', $notes) } else { $arguments += '--generate-notes' }
+          if ($env:BUILD_REF.StartsWith('refs/tags/')) { $arguments += '--verify-tag' } else { $arguments += @('--target', $env:BUILD_SHA) }
+          gh release create @arguments
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }

@@ -8,6 +8,8 @@ import re
 _CAPACITANCE = re.compile(
     r"(?<![A-Z0-9.])([0-9]+(?:\.[0-9]+)?)\s*([PNUM]?)([0-9]*)\s*F(?![A-Z0-9])"
 )
+_CAPACITANCE_INPUT = re.compile(r"([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:E([+-]?[0-9]+))?\s*(?:([PNUM]?)F|([PNUM]))?")
+_PF_PER_UNIT = {"P": 1, "N": 1_000, "U": 1_000_000, "M": 1_000_000_000, "": 1_000_000_000_000}
 ADJUSTABLE_STATUSES = ("Automatic", "Disabled")
 
 
@@ -31,6 +33,46 @@ def parse_capacitance(name):
     value = float(number + ("." + fraction if fraction else ""))
     value *= {"P": 1, "N": 1_000, "U": 1_000_000, "M": 1_000_000_000, "": 1e12}[unit]
     return value if math.isfinite(value) and value > 0 else None
+
+
+def parse_capacitance_input(text):
+    """Read a typed capacitance in pF: a bare number is pF; pF, nF, µF, mF and F suffixes are accepted."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("용량을 입력하세요. 예: 100nF, 4.7uF, 또는 pF 숫자 100000")
+    match = _CAPACITANCE_INPUT.fullmatch(text.strip().upper().replace("Μ", "U").replace("µ", "U").replace(",", ""))
+    if not match:
+        raise ValueError(f"용량 {text.strip()!r}을(를) 해석할 수 없습니다. 예: 100nF, 4.7uF, 또는 pF 숫자 100000")
+    number, exponent, farad_unit, bare_unit = match.groups()
+    unit = bare_unit if bare_unit else farad_unit if farad_unit is not None else "P"
+    try:
+        value = float(number + (f"e{exponent}" if exponent else "")) * _PF_PER_UNIT[unit]
+    except OverflowError:
+        value = math.inf
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("용량은 0보다 큰 유한한 값이어야 합니다.")
+    return value
+
+
+def format_capacitance(value, digits=6):
+    """Show a pF value with the largest fitting unit, e.g. 4700000 → 4.7 µF."""
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        return ""
+    for unit, factor in (("mF", 1e9), ("µF", 1e6), ("nF", 1e3), ("pF", 1)):
+        if value >= factor or unit == "pF":
+            return f"{value / factor:.{digits}g} {unit}"
+
+
+def editable_capacitance(value):
+    """Text that parse_capacitance_input reads back to exactly the same pF value."""
+    text = format_capacitance(value, 12)
+    if not text:
+        return ""
+    try:
+        if parse_capacitance_input(text) == value:
+            return text
+    except ValueError:
+        pass
+    return f"{value!r} pF"
 
 
 def parse_expression(text):
@@ -69,11 +111,13 @@ def _invalid_distance(record):
 
 
 def compute(records, commands, *, priority=None, policies=None, rearrange=False,
-            selected_nets=None, aliases=None):
+            selected_nets=None, aliases=None, portable_statuses=None):
     """Calculate a preview without mutating input; any error rolls back everything.
 
     Policies and aliases are explicit exact-name mappings. No historical conversion
-    or inferred component-name matching is applied.
+    or inferred component-name matching is applied. ``portable_statuses`` names the
+    status texts the destination format can store on any slot; when given, another
+    source value moved by rearrangement travels as the state it is treated as.
     """
     original = [dict(record) for record in records]
     state = [dict(record) for record in original]
@@ -122,9 +166,9 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
             issue("invalid_record", f"{label}: NET은 문자열이어야 합니다 (빈 NET은 그대로 보존 가능).")
         row = record.get("row")
         if type(row) is not int or row < 1:
-            issue("invalid_record", f"{label}: Excel 행 번호가 올바르지 않습니다.")
+            issue("invalid_record", f"{label}: SPD 부품 순번이 올바르지 않습니다.")
         elif row in seen_rows:
-            issue("duplicate_row", f"Excel {row}행이 중복되었습니다.")
+            issue("duplicate_row", f"SPD 부품 순번 {row}이(가) 중복되었습니다.")
         if type(row) is int:
             seen_rows.add(row)
         refdes = record.get("refdes")
@@ -193,9 +237,9 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
             issue("conflicting_commands", f"{source}: {net} / {component} 명령 행이 중복됩니다. 순차 명령은 한 셀에 콤마로 연결하세요.")
         seen_commands.add(key)
         if net not in net_names:
-            issue("unknown_net", f"{source}: NET {net}가 RefDes 파일에 없습니다.")
+            issue("unknown_net", f"{source}: NET {net}이(가) 불러온 SPD의 조정 대상에 없습니다.")
         if component not in component_names and component not in policy_by_target:
-            issue("unknown_component", f"{source}: 정확히 일치하는 부품 {component}가 없습니다. 명시적 별칭 또는 변환 규칙을 지정하세요.")
+            issue("unknown_component", f"{source}: 정확히 일치하는 부품 {component}이(가) 없습니다. 명시적 별칭 또는 변환 규칙을 지정하세요.")
         try:
             operations = parse_expression(command.get("expression"))
         except ValueError as exc:
@@ -216,7 +260,7 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
         if not selected_nets or isinstance(selected_nets, str) or any(not isinstance(n, str) or not n.strip() for n in selected_nets):
             issue("invalid_scope", "재배치할 NET을 명시적으로 선택하세요.")
         elif set(selected_nets) - net_names:
-            issue("unknown_net", "재배치 NET이 RefDes 파일에 없습니다: " + ", ".join(sorted(set(selected_nets) - net_names)))
+            issue("unknown_net", "재배치 NET이 불러온 SPD의 조정 대상에 없습니다: " + ", ".join(sorted(set(selected_nets) - net_names)))
     if any(i["level"] == "error" for i in issues):
         return finish(False)
 
@@ -235,7 +279,7 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
             raise _CalculationError("missing_distance", f"{context}: 선택 후보의 distance가 없거나 잘못되었습니다: {', '.join(missing)}")
         rows = sorted(rows, key=lambda r: (r["distance"] if direction == "A" else -r["distance"], r["row"]))
         if limit and len(rows) > limit and rows[limit - 1]["distance"] == rows[limit]["distance"]:
-            issue("distance_tie", f"{context}: 선택 경계의 distance {rows[limit]['distance']:g}가 같습니다. Excel 행 번호가 작은 자리를 먼저 선택했습니다.", "warning")
+            issue("distance_tie", f"{context}: 선택 경계의 distance {rows[limit]['distance']:g}가 같습니다. SPD에 먼저 기록된 자리를 먼저 선택했습니다.", "warning")
         return rows
 
     def change(record, component, status, kind, reason, command=None, **metadata):
@@ -320,7 +364,15 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
                 rows = ordered(rows, "A", f"{net} 재배치")
                 payloads = sorted([dict(r) for r in rows], key=lambda r: ranks[r["component"]])
                 for record, payload in zip(rows, payloads):
-                    if (record["component"], record["status"]) == (payload["component"], payload["status"]):
+                    if portable_statuses is not None and payload["status"] not in portable_statuses:
+                        # An unrecognised source value cannot be written to another slot;
+                        # it travels as the state it is treated as (Unknown → Automatic).
+                        payload["status"] = effective_status(payload)
+                    if record["component"] == payload["component"] and (
+                            record["status"] == payload["status"] or
+                            (portable_statuses is not None and record["status"] not in portable_statuses
+                             and effective_status(record) == payload["status"])):
+                        # Same part and state; an unrecognised value stays on its own slot.
                         continue
                     reason = (f"우선순위 재배치 {ranks[payload['component']] + 1}순위: "
                               f"{payload['refdes']} 거리 {payload['distance']:g}의 부품/상태 → 거리 {record['distance']:g}")
@@ -344,7 +396,7 @@ def compute(records, commands, *, priority=None, policies=None, rearrange=False,
                 raise _CalculationError("unauthorized_change", f"{old['refdes']}: 지정되지 않은 NET/부품/자리 변경이 발견되었습니다.")
     except _CalculationError as exc:
         issue(exc.code, str(exc))
-        issue("atomic_rollback", "오류가 있어 모든 변경을 취소했습니다. 원본 상태를 유지하며 내보낼 수 없습니다.", "info")
+        issue("atomic_rollback", "오류가 있어 이번 계산의 모든 변경을 취소했습니다. 현재 작업 상태는 그대로이며 이 결과는 적용할 수 없습니다.", "info")
         return finish(False)
     issue("verified", f"{len(state)}개 물리 자리, {len(set(before_total) | set(expected_active))}개 NET/부품 조합 수량 및 지정 범위 검산을 통과했습니다.", "info")
     return finish(True)

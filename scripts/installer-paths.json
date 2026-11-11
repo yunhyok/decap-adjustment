@@ -1,7 +1,7 @@
 {
-  "previousTag": "v1.3.0",
-  "previousAsset": "DecapAdjustment-1.3.0-Setup-x64.exe",
+  "previousTag": "v2.0.0",
+  "previousAsset": "DecapAdjustment-2.0.0-Setup-x64.exe",
   "exe": "DecapAdjustment.exe",
   "appId": "EA39DB72-3DEB-4D60-813E-BDE33AE92D66",
-  "version": "2.0.0"
+  "version": "2.1.0"
 }

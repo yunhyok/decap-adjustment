@@ -6,6 +6,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
+from .theme import fit_window
+
 
 DEFAULT_HELP = Path(__file__).resolve().parent.parent / "assets" / "help.html"
 COLORS = {"background": "#202226", "panel": "#2b2e34", "editor": "#15181d",
@@ -107,8 +109,7 @@ class HtmlHelpViewer(tk.Toplevel):
     def __init__(self, parent, path=DEFAULT_HELP):
         super().__init__(parent)
         self.title("도움말")
-        self.geometry("900x700")
-        self.minsize(520, 400)
+        fit_window(self, 900, 700, 520, 400, parent)
         self.configure(bg=COLORS["background"])
         title, blocks = parse_help_html(path)
         self.title(title)
@@ -144,6 +145,9 @@ class HtmlHelpViewer(tk.Toplevel):
         self.anchors = {}
         self._render(blocks)
         self.text.configure(state="disabled")
+        self.bind("<Escape>", lambda _event: self.destroy())
+        for key in "fF":
+            self.bind(f"<Control-{key}>", lambda _event: entry.focus_set())
 
     def _render_runs(self, runs):
         for run in runs:
@@ -211,4 +215,12 @@ class HtmlHelpViewer(tk.Toplevel):
 
 
 def show_help(parent, path=DEFAULT_HELP):
-    return HtmlHelpViewer(parent, path)
+    """Open the help window, or bring the one that is already open to the front."""
+    viewer = getattr(parent, "_help_viewer", None)
+    if viewer is not None and viewer.winfo_exists():
+        viewer.deiconify()
+        viewer.lift()
+        viewer.focus_set()
+        return viewer
+    parent._help_viewer = viewer = HtmlHelpViewer(parent, path)
+    return viewer

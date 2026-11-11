@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "decap-adjustment"
-version = "2.0.0"
+version = "2.1.0"
 description = "Edit SPD decap states through distance commands and interactive pin layout"
 requires-python = ">=3.12"
 dependencies = ["openpyxl==3.1.5"]
