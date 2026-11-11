@@ -1,73 +1,54 @@
-"""Small frozen-build integration check using bundled synthetic inputs only."""
+"""Frozen-build integration check using bundled synthetic SPD inputs only."""
 from pathlib import Path
 import tempfile
-from zipfile import ZipFile
-
-from openpyxl import load_workbook
 
 from . import __version__
 from .engine import compute
-from .excel_io import export_results, export_spd_results, inspect_workbook, join_distances, read_commands, read_distances, read_refdes
-from .spd import read_spd
+from .excel_io import fingerprint, inspect_workbook, read_commands
+from .spd import read_spd, save_spd
 
 
 def self_test():
-    from .gui import App, asset_root, fingerprint
+    from .gui import App, asset_root
+    from .help_viewer import show_help
     directory = asset_root() / "examples"
-    paths = {kind: directory / f"{kind}.xlsx" for kind in ("refdes", "distance", "commands")}
-    mappings = {kind: inspect_workbook(path, kind)[0] for kind, path in paths.items()}
-    records = join_distances(read_refdes(paths["refdes"], mappings["refdes"]), read_distances(paths["distance"], mappings["distance"]))
-    commands = read_commands(paths["commands"], mappings["commands"])
-    result = compute(records, commands)
-    assert result["ok"], result["issues"]
-    assert result["changes"], "Synthetic commands must cause changes"
-    assert all(s["expected_active"] == s["after_active"] for s in result["summary"])
     board = directory / "board.spd"
     layout = read_spd(board)
     targets = [name for name in layout.components if name.startswith("CAP_")]
-    spd_records = layout.records("DEMO_DUT", targets)
-    assert spd_records == [record for record in records if record["component"] in targets]
-    spd_result = compute(spd_records, commands)
-    assert spd_result["ok"] and spd_result["changes"] == result["changes"]
-    source_hash = fingerprint(paths["refdes"])
+    records = layout.records("DEMO_DUT", targets)
+    commands_path = directory / "commands.xlsx"
+    commands = read_commands(commands_path, inspect_workbook(commands_path, "commands")[0])
+    result = compute(records, commands)
+    assert result["ok"] and len(result["changes"]) == 6, result["issues"]
+    assert all(s["expected_active"] == s["after_active"] for s in result["summary"])
+    assert {v["side"] for v in layout.geometry().values()} >= {"Top", "Bottom"}
+    assert layout.component_metadata[targets[0]]["capacitance_pf"] is not None
     with tempfile.TemporaryDirectory(prefix="decap-selftest-") as temporary:
-        outputs = export_results(paths["refdes"], mappings["refdes"], result, temporary)
-        updated = next(path for path in outputs if path.name == "updated_refdes.xlsx")
-        reread = read_refdes(updated, mappings["refdes"])
-        assert [(r["refdes"], r["net"], r["component"], r["status"]) for r in reread] == [
-            (r["refdes"], r["net"], r["component"], r["status"]) for r in result["records"]]
-        with ZipFile(paths["refdes"]) as original, ZipFile(updated) as final:
-            changed_members = [name for name in original.namelist() if original.read(name) != final.read(name)]
-            assert len(changed_members) == 1 and changed_members[0].startswith("xl/worksheets/")
-        for path in outputs:
-            if path.suffix == ".xlsx":
-                workbook = load_workbook(path, read_only=True)
-                workbook.close()
-        spd_outputs = export_spd_results(board, layout, "DEMO_DUT", targets, spd_result, temporary)
-        book = load_workbook(next(p for p in spd_outputs if p.name == "updated_refdes.xlsx"), read_only=True)
-        try:
-            assert book["RefDes"].max_row == len(layout.inventory) + 1
-            assert list(book["Cap Distance"].values)[1:] == [(r["refdes"], r["net"], r["distance"]) for r in spd_records]
-            assert list(book["RefDes"].values)[1:len(spd_records)+1] == [
-                (r["component"], r["refdes"], r["status"], r["net"]) for r in spd_result["records"]]
-        finally:
-            book.close()
-    assert source_hash == fingerprint(paths["refdes"])
+        saved = save_spd(board, layout, result["records"], Path(temporary) / "adjusted.spd")
+        assert read_spd(saved).records("DEMO_DUT", targets) == result["records"]
+    assert fingerprint(board) == layout.source_hash
     app = App()
     try:
         app.withdraw()
-        app.paths = {k: str(v) for k, v in paths.items()}
-        app.mappings = mappings
-        app.mode.set("excel")
-        app.reload_records()
+        app.load_layout(board, layout, "DEMO_DUT", targets)
+        app.manual = commands
+        app.render_commands()
+        app.invalidate()
         app.preview()
         assert app.result and app.result["ok"]
-        assert len(app.change_table.get_children()) == len(result["changes"])
-        assert len(app.summary_table.get_children()) == len(result["summary"])
-        app.invalidate()
-        assert app.result is None and "disabled" in app.save_button.state()
+        assert len(app.change_table.get_children()) == 6
+        app.apply_preview()
+        assert app.records == result["records"] and not app.manual
+        app.undo()
+        assert app.records == records and app.manual == commands
+        app.redo()
+        assert app.records == result["records"]
+        app.apply_selection({records[0]["refdes"]}, "Disabled")
+        assert app.records[0]["status"] == "Disabled"
+        app.help()
+        assert any(child.winfo_class() == "Toplevel" for child in app.winfo_children())
         app.update()
     finally:
         app.destroy()
     return {"ok": True, "version": __version__, "rows": len(records), "commands": len(commands),
-            "changed_refdes": len(result["changes"]), "checks": ["read", "calculate", "counts", "export", "reopen", "source-preservation", "gui-preview", "preview-invalidation", "spd-excel-parity", "spd-export"]}
+            "changed_refdes": len(result["changes"]), "checks": ["spd-read", "calculate", "counts", "spd-save", "reopen", "source-preservation", "top-bottom", "model-metadata", "gui-apply", "undo-redo", "direct-selection", "html-help"]}

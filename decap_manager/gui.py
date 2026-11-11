@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import math
-import os
 from pathlib import Path
 import sys
 import tkinter as tk
@@ -13,11 +13,14 @@ from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 
 from . import __version__
-from .engine import ADJUSTABLE_STATUSES, compute, effective_status, parse_capacitance, parse_expression
-from .excel_io import (export_results, export_spd_results, fingerprint, inspect_workbook, join_distances,
-                       read_commands, read_distances, read_refdes)
+from .engine import ADJUSTABLE_STATUSES, compute, effective_status, parse_expression
+from .excel_io import fingerprint, inspect_workbook, read_commands
 from .shortage import find_shortages, shortage_choices
-from .spd_dialog import open_spd, SpdScopeDialog
+from .spd_dialog import open_spd, run_spd_task, SpdScopeDialog
+from .spd import read_spd, save_spd, validate_component_metadata
+from .board_view import BoardView
+from .help_viewer import show_help
+from .theme import apply_theme
 
 
 def asset_root():
@@ -107,8 +110,6 @@ class QuantityShortageDialog(tk.Toplevel):
 
 class MappingDialog(tk.Toplevel):
     FIELDS = {
-        "refdes": [("refdes", "RefDes"), ("net", "NET"), ("component", "Component"), ("status", "Status")],
-        "distance": [("refdes", "RefDes"), ("net", "NET"), ("distance", "Distance")],
         "commands": [("net", "NET (없으면 Channel + SITE)"), ("channel", "Channel"), ("site", "SITE"),
                      ("component", "Component (세로 표)"), ("expression", "명령 (세로 표)")],
     }
@@ -154,7 +155,7 @@ class MappingDialog(tk.Toplevel):
         ttk.Button(top, text="행 미리보기", command=self.refresh).pack(side="left")
         ttk.Label(main, text="셀 미리보기 · 열 경계를 끌어 너비 조절 / 가로 스크롤로 오른쪽 열 확인").pack(anchor="w", pady=(6, 0))
         self.samples = table(main, [], 5)
-        self.samples.tag_configure("header", background="#e4eff8", font=("Malgun Gothic", 10, "bold"))
+        self.samples.tag_configure("header", background="#353a42", foreground="#eceef1", font=("Malgun Gothic", 10, "bold"))
         self.samples.bind("<ButtonRelease-1>", self.show_preview_cell)
         detail = ttk.Frame(main)
         detail.pack(fill="x")
@@ -264,8 +265,7 @@ class MappingDialog(tk.Toplevel):
                         wide[name.strip()] = col(value)
                 mapping.update(component_columns=wide, net_template=self.template.get().strip())
             # The readers validate required fields and data before this mapping is committed.
-            reader = {"refdes": read_refdes, "distance": read_distances, "commands": read_commands}[self.kind]
-            reader(self.path, mapping)
+            read_commands(self.path, mapping)
             self.result = mapping
             self.destroy()
         except Exception as exc:
@@ -276,104 +276,168 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"Decap Adjustment {__version__}")
-        self.geometry("1180x820")
-        self.minsize(940, 680)
-        self.option_add("*Font", "{Malgun Gothic} 10")
-        style = ttk.Style(self)
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        style.configure("Treeview", rowheight=27)
-        style.configure("Title.TLabel", font=("Malgun Gothic", 20, "bold"))
+        self.geometry("1220x900")
+        self.minsize(900, 680)
+        apply_theme(self)
         icon = asset_root() / "assets" / "app.ico"
         if icon.exists():
             self.iconbitmap(str(icon))
-        self.paths, self.mappings, self.hashes = {}, {}, {}
+        self.paths, self.hashes = {}, {}
         self.spd_layout = self.spd_selection = None
         self.records, self.manual, self.aliases, self.policies = [], [], {}, []
-        self.capacities = {}
+        self.capacities, self.board_geometry = {}, {}
+        self.metadata_overrides = {}
         self.result = None
-        self.file_labels = {}
-        container = ttk.Frame(self, padding=18)
+        self._tracking = False
+        self._undo, self._redo = [], []
+        self._last_state = None
+        self._saved_state = None
+        container = ttk.Frame(self, padding=12)
         container.pack(fill="both", expand=True)
-        ttk.Label(container, text="Decap Adjustment", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(container, text="SPD 또는 Excel 입력 → 증감 / 배치 설정 → 변경·수량 검증 → 새 파일 저장").pack(anchor="w", pady=(2, 12))
+        heading = ttk.Frame(container)
+        heading.pack(fill="x")
+        ttk.Label(heading, text="Decap Adjustment", style="Title.TLabel").pack(side="left")
+        ttk.Button(heading, text="도움말  F1", command=self.help).pack(side="right")
+        self.build_files(container)
         self.tabs = ttk.Notebook(container)
-        self.tabs.pack(fill="both", expand=True)
-        self.pages = []
-        for title in ["1  파일", "2  증감 명령", "3  배치 · 변환", "4  미리보기"]:
-            page = ttk.Frame(self.tabs, padding=14)
-            self.tabs.add(page, text=title)
+        self.tabs.pack(fill="both", expand=True, pady=(8, 0))
+        commands_page, board_page = (ttk.Frame(self.tabs, padding=8) for _ in range(2))
+        self.tabs.add(commands_page, text="1  거리 기준 · 수량 조절")
+        self.tabs.add(board_page, text="2  도면 · 직접 선택")
+        self.command_tabs = ttk.Notebook(commands_page)
+        self.command_tabs.pack(fill="both", expand=True)
+        self.pages = [None]
+        for title in ("명령 목록", "배치 · 변환", "계산 미리보기"):
+            page = ttk.Frame(self.command_tabs, padding=8)
+            self.command_tabs.add(page, text=title)
             self.pages.append(page)
-        self.build_files()
         self.build_commands()
         self.build_layout()
         self.build_preview()
+        self.board = BoardView(board_page, self.apply_selection)
+        self.board.pack(fill="both", expand=True)
         footer = ttk.Frame(container)
-        footer.pack(fill="x", pady=(12, 0))
-        self.notice = tk.StringVar(value="SPD 한 개 또는 Distance·RefDes Excel 두 개를 선택하세요.")
-        ttk.Label(footer, textvariable=self.notice).pack(side="left")
-        self.save_button = ttk.Button(footer, text="결과 저장…", command=self.save, state="disabled")
+        footer.pack(fill="x", pady=(8, 0))
+        self.notice = tk.StringVar(value="SPD 파일을 선택하세요.")
+        ttk.Label(footer, textvariable=self.notice, wraplength=650).pack(side="left", fill="x", expand=True)
+        self.save_button = ttk.Button(footer, text="SPD 다른 이름으로 저장…", command=self.save, state="disabled", style="Primary.TButton")
         self.save_button.pack(side="right")
-        ttk.Button(footer, text="계산 · 미리보기", command=self.preview).pack(side="right", padx=8)
+        self.build_menu()
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Control-z>", self.undo)
+        self.bind("<Control-y>", self.redo)
+        self.bind("<Control-s>", lambda event: self.save())
+        self.bind("<Control-o>", lambda event: self.choose_spd())
+        self.bind("<F1>", lambda event: self.help())
+        self._tracking = True
+        self._last_state = self.snapshot()
+        self._saved_state = deepcopy(self._last_state)
+        self.update_history_menu()
 
-    def invalidate(self, *_):
-        self.result = None
-        if hasattr(self, "save_button"):
-            self.save_button.configure(state="disabled")
-            self.notice.set("설정이 변경되었습니다. 계산 · 미리보기를 실행하세요.")
-        if hasattr(self, "change_table"):
-            self.preview_label.set("설정 변경 · 다시 계산해야 합니다.")
-            for tree in (self.change_table, self.summary_table):
-                tree.delete(*tree.get_children())
-            self.details.delete("1.0", "end")
+    def part_metadata(self, component):
+        base = self.spd_layout.component_metadata.get(component, {}) if self.spd_layout else {}
+        return self.metadata_overrides.get(component, base)
 
-    def build_files(self):
-        page = self.pages[0]
-        selector = ttk.Frame(page)
-        selector.pack(fill="x", pady=(0, 6))
-        ttk.Label(selector, text="배치 정보 입력").pack(side="left", padx=(0, 14))
-        self.source = tk.StringVar(value="excel")
-        for key, label in (("excel", "Excel 두 개"), ("spd", "SPD 한 개")):
-            ttk.Radiobutton(selector, text=label, variable=self.source, value=key,
-                            command=self.switch_source).pack(side="left", padx=4)
-        primary = ttk.Frame(page)
-        primary.pack(fill="x")
-        self.excel_panel = ttk.Frame(primary)
-        self.excel_panel.pack(fill="x")
-        self.spd_panel = ttk.LabelFrame(primary, text="SPD · RefDes와 거리", padding=12)
-        self.file_labels["spd"] = tk.StringVar(value="파일을 선택하지 않았습니다")
-        ttk.Label(self.spd_panel, textvariable=self.file_labels["spd"], wraplength=630).pack(side="left", fill="x", expand=True)
-        ttk.Button(self.spd_panel, text="SPD 선택…", command=self.choose_spd).pack(side="right")
-        self.scope_button = ttk.Button(self.spd_panel, text="거리 기준 · 대상…", state="disabled", command=self.configure_spd)
-        self.scope_button.pack(side="right", padx=6)
-        for kind, title in [("distance", "Distance Excel"), ("refdes", "RefDes Excel"), ("commands", "증감 명령 Excel (선택)")]:
-            box = ttk.LabelFrame(page if kind == "commands" else self.excel_panel, text=title, padding=10)
-            box.pack(fill="x", pady=4)
-            var = tk.StringVar(value="파일을 선택하지 않았습니다")
-            self.file_labels[kind] = var
-            ttk.Label(box, textvariable=var, wraplength=770).pack(side="left", fill="x", expand=True)
-            ttk.Button(box, text="파일 선택…", command=lambda k=kind: self.choose_file(k)).pack(side="right")
-            ttk.Button(box, text="열 설정…", command=lambda k=kind: self.remap(k)).pack(side="right", padx=6)
-        ttk.Button(page, text="합성 예제 불러오기", command=self.load_examples).pack(anchor="w", pady=8)
-        ttk.Label(page, text="SPD: 기준 부품과 조정할 커패시터 종류를 선택합니다. 같은 NET의 핀 간 거리를 µm로 계산합니다.\nExcel: 시트·헤더·열을 확인합니다. 거리와 RefDes는 RefDes + NET으로 연결합니다.\n결과는 새 폴더에 저장합니다. 입력 파일은 변경하지 않습니다.", justify="left").pack(anchor="w", pady=5)
-
-    def switch_source(self):
-        is_spd = self.source.get() == "spd"
-        new = self.spd_panel if is_spd else self.excel_panel
-        if new.winfo_manager():
+    def edit_component_metadata(self):
+        if not self.spd_layout:
             return
-        old = self.excel_panel if is_spd else self.spd_panel
-        old.pack_forget()
-        new.pack(fill="x", pady=4)
-        for kind in ("refdes", "distance", "spd"):
-            self.paths.pop(kind, None)
-            self.mappings.pop(kind, None)
-            self.hashes.pop(kind, None)
-            self.file_labels[kind].set("파일을 선택하지 않았습니다")
-        self.spd_layout = self.spd_selection = None
-        self.scope_button.configure(state="disabled")
-        self.show_records([])
-        self.notice.set("SPD 파일을 선택하세요." if is_spd else "Distance·RefDes Excel 파일을 선택하세요.")
+        dialog = tk.Toplevel(self)
+        dialog.title("Component Type · 모델 주석 / 수동 지정")
+        dialog.geometry("840x550")
+        dialog.minsize(700, 440)
+        dialog.transient(self)
+        panel = ttk.Frame(dialog, padding=12)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="SPICE 주석의 공칭 용량·사이즈를 사용합니다. 수동 값은 SPD 주석으로 저장하며 회로 모델 값은 바꾸지 않습니다.", wraplength=780).pack(anchor="w")
+        tree = table(panel, [("part", "Component Type", 290), ("size", "사이즈", 120),
+                             ("capacity", "용량 (pF)", 130), ("source", "근거", 120)], 8)
+        for part in sorted(self.capacities):
+            meta = self.part_metadata(part)
+            tree.insert("", "end", iid=part, values=(part, meta.get("size") or "미인식", meta.get("capacitance_pf") or "미인식", meta.get("source") or "미인식"))
+        form = ttk.Frame(panel)
+        form.pack(fill="x", pady=8)
+        size, capacity = tk.StringVar(), tk.StringVar()
+        for column, (label, value) in enumerate((("사이즈 (예: 1005M / 0402)", size), ("용량 (pF, 1µF = 1000000)", capacity))):
+            ttk.Label(form, text=label).grid(row=0, column=column, sticky="w")
+            ttk.Entry(form, textvariable=value).grid(row=1, column=column, sticky="ew", padx=(0, 12))
+            form.columnconfigure(column, weight=1)
+
+        def select(_event=None):
+            if tree.selection():
+                meta = self.part_metadata(tree.selection()[0])
+                size.set(meta.get("size") or "")
+                capacity.set(str(meta.get("capacitance_pf") or ""))
+
+        def apply(reset=False):
+            if not tree.selection():
+                return
+            part = tree.selection()[0]
+            try:
+                if reset:
+                    self.metadata_overrides.pop(part, None)
+                else:
+                    value = float(capacity.get()) if capacity.get().strip() else None
+                    fields = validate_component_metadata(dict(size=size.get().strip() or None, capacitance_pf=value))
+                    self.metadata_overrides[part] = dict(fields, source="Manual")
+                meta = self.part_metadata(part)
+                self.capacities[part] = meta.get("capacitance_pf")
+                for item in self.priority_table.get_children():
+                    if self.priority_table.item(item, "values")[0] == part:
+                        self.priority_table.item(item, values=(part, self.capacities[part] or "미인식 · 수동 순서"))
+                self.sort_current_priority()
+                self.refresh_views()
+                self.invalidate()
+                tree.item(part, values=(part, meta.get("size") or "미인식", meta.get("capacitance_pf") or "미인식", meta.get("source") or "미인식"))
+                select()
+            except ValueError as exc:
+                messagebox.showerror("부품 정보", str(exc), parent=dialog)
+
+        tree.bind("<<TreeviewSelect>>", select)
+        buttons = ttk.Frame(panel)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="불러온 정보로 복원", command=lambda: apply(True)).pack(side="left")
+        ttk.Button(buttons, text="수동 값 적용", command=apply, style="Primary.TButton").pack(side="right")
+        ttk.Button(buttons, text="닫기", command=dialog.destroy).pack(side="right", padx=8)
+        dialog.grab_set()
+
+    def build_menu(self):
+        menu = tk.Menu(self)
+        files = tk.Menu(menu, tearoff=False)
+        files.add_command(label="SPD 열기…", accelerator="Ctrl+O", command=self.choose_spd)
+        files.add_command(label="SPD 다른 이름으로 저장…", accelerator="Ctrl+S", command=self.save)
+        files.add_separator()
+        files.add_command(label="종료", command=self.close)
+        menu.add_cascade(label="파일", menu=files)
+        self.edit_menu = tk.Menu(menu, tearoff=False)
+        self.edit_menu.add_command(label="실행 취소", accelerator="Ctrl+Z", command=self.undo)
+        self.edit_menu.add_command(label="다시 실행", accelerator="Ctrl+Y", command=self.redo)
+        menu.add_cascade(label="편집", menu=self.edit_menu)
+        menu.add_command(label="도움말", command=self.help)
+        self.configure(menu=menu)
+
+    def help(self):
+        show_help(self, asset_root() / "assets" / "help.html")
+
+    def build_files(self, parent):
+        box = ttk.LabelFrame(parent, text="공통 SPD 파일 · 두 탭이 같은 작업 상태를 사용합니다", padding=8)
+        box.pack(fill="x", pady=(8, 0))
+        buttons = ttk.Frame(box)
+        buttons.pack(side="right")
+        ttk.Button(buttons, text="SPD 열기…", command=self.choose_spd).pack(side="left")
+        self.scope_button = ttk.Button(buttons, text="거리 기준 · 대상…", state="disabled", command=self.configure_spd)
+        self.scope_button.pack(side="left", padx=6)
+        ttk.Button(buttons, text="부품 정보…", command=self.edit_component_metadata).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="합성 예제", command=self.load_examples).pack(side="left")
+        self.file_label = tk.StringVar(value="파일을 선택하지 않았습니다")
+        ttk.Label(box, textvariable=self.file_label, wraplength=480).pack(side="left", fill="x", expand=True)
+
+    def confirm_discard(self):
+        return self.snapshot() == self._saved_state or messagebox.askyesno(
+            "작업 변경", "저장하지 않은 작업을 버리고 계속하시겠습니까?", default="no", parent=self)
+
+    def close(self):
+        if self.confirm_discard():
+            self.destroy()
 
     def choose_spd(self):
         path = filedialog.askopenfilename(title="Cadence Sigrity SPD 선택", filetypes=[("텍스트 SPD", "*.spd")])
@@ -381,146 +445,308 @@ class App(tk.Tk):
             self.configure_spd(path)
 
     def configure_spd(self, path=None):
+        if path and not self.confirm_discard():
+            return
         try:
             layout = open_spd(self, path) if path else self.spd_layout
             choice = SpdScopeDialog(self, layout, None if path else self.spd_selection).result
             if not choice:
                 return
-            reference, targets, records = choice
-            if path:
-                self.paths["spd"] = str(path)
-            self.spd_layout, self.spd_selection = layout, (reference, targets)
-            self.hashes["spd"] = layout.source_hash
-            self.scope_button.configure(state="normal")
-            skipped = sum(layout.components[t] for t in targets) - len(records)
-            self.file_labels["spd"].set(f"{Path(self.paths['spd']).name}\n기준: {reference} · 대상 {len(targets)}종 · "
-                                        f"{len(records):,}자리 · 미연결 제외 {skipped:,}자리 · µm")
-            self.show_records(records)
+            if not path:
+                if choice[0] == self.spd_selection[0] and set(choice[1]) == set(self.spd_selection[1]):
+                    return True
+                if not messagebox.askyesno("범위 변경 · 새 작업", "범위를 변경하면 현재 작업을 종료하고 처음 연 SPD에서 다시 시작합니다.\n저장한 변경을 이어가려면 저장된 SPD를 여세요. 계속하시겠습니까?", default="no", parent=self):
+                    return
+            self.load_layout(path or self.paths["spd"], layout, *choice[:2])
             return True
         except Exception as exc:
             messagebox.showerror("SPD 불러오기", str(exc), parent=self)
 
-    def choose_file(self, kind):
-        path = filedialog.askopenfilename(title="Excel 선택", filetypes=[("Excel 통합 문서", "*.xlsx")])
-        if path:
-            self.configure_file(kind, path)
-
-    def remap(self, kind):
-        if kind not in self.paths:
-            return self.choose_file(kind)
-        self.configure_file(kind, self.paths[kind], self.mappings[kind])
-
-    def configure_file(self, kind, path, initial=None):
-        try:
-            dialog = MappingDialog(self, path, kind, initial)
-            if dialog.result:
-                self.paths[kind], self.mappings[kind] = str(path), dialog.result
-                self.file_labels[kind].set(f"{Path(path).name}\n{dialog.result['sheet']} · 헤더 {dialog.result['header_row']}행")
-                self.invalidate()
-                if kind == "commands":
-                    self.mode.set("excel")
-                    self.hashes[kind] = fingerprint(path)
-                    if self.source.get() == "spd":
-                        return
-                self.reload_records()
-        except Exception as exc:
-            messagebox.showerror("파일 불러오기", str(exc), parent=self)
-
-    def reload_records(self):
-        self.records = []
-        self.hashes = {k: fingerprint(v) for k, v in self.paths.items()}
-        if "refdes" in self.paths:
-            self.records = read_refdes(self.paths["refdes"], self.mappings["refdes"])
-            if "distance" in self.paths:
-                self.records = join_distances(self.records, read_distances(self.paths["distance"], self.mappings["distance"]))
-            if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
-                self.records = []
-                raise ValueError("읽는 동안 입력 파일이 변경되었습니다. 다시 불러오세요.")
-        self.show_records(self.records)
+    def load_layout(self, path, layout, reference, targets):
+        records = layout.records(reference, targets)
+        geometry = layout.geometry()
+        metadata = layout.scope_metadata(reference, targets)
+        included = {r["refdes"] for r in records} | {r["refdes"] for r in layout.inventory if r["component"] == reference}
+        geometry = {ref: {**values, **metadata.get(ref, {})} for ref, values in geometry.items() if ref in included}
+        self._tracking = False
+        self.board.set_records([], {})
+        self.paths, self.hashes = {"spd": str(path)}, {"spd": layout.source_hash}
+        self.spd_layout, self.spd_selection = layout, (reference, tuple(targets))
+        self.board_geometry = geometry
+        self.metadata_overrides = {}
+        self.manual, self.aliases, self.policies = [], {}, []
+        self.alias_label.set("등록된 별칭 없음")
+        self.rearrange.set(False)
+        self.use_policies.set(False)
+        self.show_records(records)
+        self.render_commands()
+        self.scope_button.configure(state="normal")
+        self.file_label.set(f"{Path(path).name} · 기준 {reference} · 대상 {len(targets)}종 · {len(records):,}자리")
+        self._undo.clear()
+        self._redo.clear()
+        self._last_state = self.snapshot()
+        self._saved_state = deepcopy(self._last_state)
+        self._tracking = True
+        self.update_history_menu()
+        self.notice.set(f"{len(records):,}개 decap을 불러왔습니다. 거리 단위: µm")
 
     def show_records(self, records):
-        self.records = records
-        self.change_table.heading("distance", text="거리 (µm)" if self.source.get() == "spd" else "Distance")
-        adjustable = [r for r in records if effective_status(r) in ADJUSTABLE_STATUSES]
-        components = sorted({r["component"] for r in adjustable})
-        self.capacities = {c: parse_capacitance(c) for c in components}
-        self.component_input.configure(values=components)
-        self.net_input.configure(values=sorted({r["net"] for r in records if r["net"]}))
+        self.records = deepcopy(records)
+        self.capacities = {r["component"]: self.part_metadata(r["component"]).get("capacitance_pf") for r in records}
         self.net_list.delete(0, "end")
-        for net in sorted({r["net"] for r in adjustable}):
+        for net in sorted({r["net"] for r in records if r["net"]}):
             self.net_list.insert("end", net)
         self.reset_priority()
         self.render_policies()
-        self.notice.set(f"{len(records):,}개 RefDes를 불러왔습니다. 명령과 배치 범위를 설정하세요.")
+        self.refresh_views()
 
     def load_examples(self):
+        if not self.confirm_discard():
+            return
         try:
-            directory = asset_root() / "examples"
-            names = {"distance": "distance.xlsx", "refdes": "refdes.xlsx", "commands": "commands.xlsx"}
-            if self.source.get() == "spd":
-                if not self.configure_spd(directory / "board.spd"):
-                    return
-                names = {"commands": "commands.xlsx"}
-            for kind, name in names.items():
-                path = directory / name
-                candidates = inspect_workbook(path, kind)
-                if not candidates:
-                    raise ValueError(f"예제 헤더를 찾을 수 없습니다: {name}")
-                self.paths[kind], self.mappings[kind] = str(path), candidates[0]
-                self.file_labels[kind].set(name)
-            self.mode.set("excel")
+            path = asset_root() / "examples" / "board.spd"
+            layout = read_spd(path)
+            self.load_layout(path, layout, "DEMO_DUT", [c for c in layout.components if c.startswith("CAP_")])
+            commands = asset_root() / "examples" / "commands.xlsx"
+            self.manual = read_commands(commands, inspect_workbook(commands, "commands")[0])
+            self.render_commands()
             self.invalidate()
-            if self.source.get() == "spd":
-                self.hashes["commands"] = fingerprint(self.paths["commands"])
-            else:
-                self.reload_records()
         except Exception as exc:
             messagebox.showerror("예제", str(exc), parent=self)
 
     def build_commands(self):
         page = self.pages[1]
-        top = ttk.Frame(page)
-        top.pack(fill="x")
-        self.mode = tk.StringVar(value="direct")
-        for value, label in [("direct", "직접 입력"), ("excel", "명령 Excel 사용")]:
-            ttk.Radiobutton(top, text=label, variable=self.mode, value=value, command=self.invalidate).pack(side="left", padx=(0, 20))
-        ttk.Label(page, text="A = 가까운 순 · D = 먼 순 · +n = Disabled → Automatic · -n = Automatic → Disabled\n예: A-2,D+1  (콤마 순서대로 수행). Excel 사용 시 아래 직접 입력 목록은 적용하지 않습니다.").pack(anchor="w", pady=12)
+        search = ttk.Frame(page)
+        search.pack(fill="x")
+        ttk.Label(search, text="채널 / SITE / NET / 부품 검색").pack(side="left")
+        self.scope_search = tk.StringVar()
+        ttk.Entry(search, textvariable=self.scope_search).pack(side="left", fill="x", expand=True, padx=8)
+        ttk.Button(search, text="명령 Excel 가져오기…", command=self.import_commands).pack(side="right")
+        self.scope_table = table(page, [("site", "SITE", 90), ("channel", "채널 / NET", 210),
+                                      ("component", "Component", 250), ("active", "활성", 65),
+                                      ("disabled", "비활성", 65), ("total", "전체", 65)], 5)
+        self.scope_table.bind("<<TreeviewSelect>>", self.select_scope)
+        self.scope_search.trace_add("write", lambda *_: self.refresh_scope())
+        ttk.Label(page, text="A: 가까운 순 · D: 먼 순  |  +N: 활성화 · -N: 비활성화  |  예: A-2,D+1").pack(anchor="w", pady=(8, 4))
         row = ttk.Frame(page)
         row.pack(fill="x")
-        self.net_input = ttk.Combobox(row, width=28)
-        self.component_input = ttk.Combobox(row, width=32)
-        self.expression_input = ttk.Entry(row, width=20)
-        for label, widget in [("NET", self.net_input), ("Component", self.component_input), ("증감", self.expression_input)]:
-            ttk.Label(row, text=label).pack(side="left", padx=(0, 6))
-            widget.pack(side="left", padx=(0, 10))
-        ttk.Button(row, text="추가", command=self.add_command).pack(side="left")
-        self.command_table = table(page, [("net", "NET", 220), ("component", "Component", 300), ("expression", "명령", 180)])
-        ttk.Button(page, text="선택 명령 삭제", command=self.delete_commands).pack(anchor="e")
-        box = ttk.LabelFrame(page, text="명시적 부품명 별칭 (이름을 자동으로 합치지 않습니다)", padding=8)
-        box.pack(fill="x", pady=10)
+        self.net_input = ttk.Combobox(row, width=22)
+        self.component_input = ttk.Combobox(row, width=28)
+        self.expression_input = ttk.Entry(row, width=16)
+        for index, (label, widget) in enumerate((("NET", self.net_input), ("Component", self.component_input), ("명령", self.expression_input))):
+            ttk.Label(row, text=label).grid(row=0, column=index, sticky="w")
+            widget.grid(row=1, column=index, sticky="ew", padx=(0, 8))
+            row.columnconfigure(index, weight=1)
+        ttk.Button(row, text="추가", command=self.add_command).grid(row=1, column=3, padx=2)
+        ttk.Button(row, text="선택 수정", command=self.edit_command).grid(row=1, column=4, padx=2)
+        ttk.Button(row, text="선택 삭제", command=self.delete_commands).grid(row=1, column=5, padx=2)
+        self.command_table = table(page, [("net", "NET", 210), ("component", "Component", 260), ("expression", "명령", 180)], 5)
+        self.command_table.bind("<<TreeviewSelect>>", self.select_command)
+        self.command_table.bind("<Delete>", lambda event: self.delete_commands())
+        self.expression_input.bind("<Return>", lambda event: self.add_command())
+        box = ttk.Frame(page)
+        box.pack(fill="x", pady=5)
         self.alias_label = tk.StringVar(value="등록된 별칭 없음")
-        ttk.Label(box, textvariable=self.alias_label, wraplength=800).pack(side="left", expand=True, fill="x")
+        ttk.Label(box, textvariable=self.alias_label, wraplength=500).pack(side="left", fill="x", expand=True)
         ttk.Button(box, text="별칭 편집…", command=self.edit_aliases).pack(side="right")
+        ttk.Button(box, text="계산 · 미리보기", command=self.preview, style="Primary.TButton").pack(side="right", padx=8)
+
+    def refresh_scope(self):
+        if not hasattr(self, "scope_table"):
+            return
+        self.scope_table.delete(*self.scope_table.get_children())
+        groups = {}
+        for row in self.records:
+            site = self.board_geometry.get(row["refdes"], {}).get("site", "")
+            key = (site, row["net"], row["component"])
+            amounts = groups.setdefault(key, [0, 0, 0])
+            amounts[0] += effective_status(row) == "Automatic"
+            amounts[1] += effective_status(row) == "Disabled"
+            amounts[2] += 1
+        terms = self.scope_search.get().casefold().split()
+        for key, counts in sorted(groups.items()):
+            if all(term in " ".join(key).casefold() for term in terms):
+                self.scope_table.insert("", "end", values=(*key, *counts))
+        self.net_input.configure(values=sorted({r["net"] for r in self.records}))
+        self.component_input.configure(values=sorted({r["component"] for r in self.records}))
+
+    def select_scope(self, _event=None):
+        selected = self.scope_table.selection()
+        if selected:
+            values = self.scope_table.item(selected[0], "values")
+            self.net_input.set(values[1])
+            self.component_input.set(values[2])
+
+    def select_command(self, _event=None):
+        selected = self.command_table.selection()
+        if selected:
+            values = self.command_table.item(selected[0], "values")
+            self.net_input.set(values[0])
+            self.component_input.set(values[1])
+            self.expression_input.delete(0, "end")
+            self.expression_input.insert(0, values[2])
+
+    def render_commands(self):
+        self.command_table.delete(*self.command_table.get_children())
+        for index, command in enumerate(self.manual):
+            self.command_table.insert("", "end", iid=str(index), values=[command[k] for k in ("net", "component", "expression")])
+
+    def command_input(self):
+        net, comp, expr = self.net_input.get().strip(), self.component_input.get().strip(), self.expression_input.get().strip()
+        actual = self.aliases.get(comp, comp)
+        if not any(r["net"] == net for r in self.records) or actual not in self.capacities:
+            raise ValueError("불러온 SPD의 NET과 Component를 선택하세요.")
+        parse_expression(expr)
+        return dict(net=net, component=comp, expression=expr, source="직접 입력")
 
     def add_command(self):
         try:
-            net, comp, expr = self.net_input.get().strip(), self.component_input.get().strip(), self.expression_input.get().strip()
-            if not net or not comp:
-                raise ValueError("NET과 Component를 입력하세요.")
-            parse_expression(expr)
-            self.manual.append(dict(net=net, component=comp, expression=expr, source="직접 입력"))
-            self.command_table.insert("", "end", values=(net, comp, expr))
-            self.mode.set("direct")
+            self.manual.append(self.command_input())
+            self.render_commands()
+            self.invalidate()
+        except ValueError as exc:
+            messagebox.showerror("명령", str(exc), parent=self)
+
+    def edit_command(self):
+        selected = self.command_table.selection()
+        if len(selected) != 1:
+            return
+        try:
+            self.manual[int(selected[0])] = self.command_input()
+            self.render_commands()
             self.invalidate()
         except ValueError as exc:
             messagebox.showerror("명령", str(exc), parent=self)
 
     def delete_commands(self):
-        indices = sorted([self.command_table.index(i) for i in self.command_table.selection()], reverse=True)
-        for index in indices:
+        for index in sorted((int(i) for i in self.command_table.selection()), reverse=True):
             self.manual.pop(index)
-            self.command_table.delete(self.command_table.get_children()[index])
+        self.render_commands()
         self.invalidate()
+
+    def import_commands(self):
+        path = filedialog.askopenfilename(title="증감 명령 Excel", filetypes=[("Excel 통합 문서", "*.xlsx")])
+        if not path:
+            return
+        try:
+            mapping = MappingDialog(self, path, "commands").result
+            if mapping:
+                self.manual.extend(read_commands(path, mapping))
+                self.render_commands()
+                self.invalidate()
+        except Exception as exc:
+            messagebox.showerror("명령 가져오기", str(exc), parent=self)
+
+    def snapshot(self):
+        return deepcopy(dict(records=self.records, manual=self.manual, aliases=self.aliases, policies=self.policies,
+                             capacities=self.capacities, metadata_overrides=self.metadata_overrides, priority=[self.priority_table.item(i, "values")[0] for i in self.priority_table.get_children()],
+                             rearrange=self.rearrange.get(), use_policies=self.use_policies.get(),
+                             selected_nets=[self.net_list.get(i) for i in self.net_list.curselection()]))
+
+    def remember(self):
+        if not self._tracking:
+            return
+        state = self.snapshot()
+        if state != self._last_state:
+            self._undo.append(self._last_state)
+            self._redo.clear()
+            self._last_state = state
+        self.update_history_menu()
+
+    def update_history_menu(self):
+        if hasattr(self, "edit_menu"):
+            self.edit_menu.entryconfigure(0, state="normal" if self._undo else "disabled")
+            self.edit_menu.entryconfigure(1, state="normal" if self._redo else "disabled")
+
+    def restore(self, state):
+        self._tracking = False
+        state = deepcopy(state)
+        for key in ("records", "manual", "aliases", "policies", "capacities", "metadata_overrides"):
+            setattr(self, key, state[key])
+        self.rearrange.set(state["rearrange"])
+        self.use_policies.set(state["use_policies"])
+        self.render_policies()
+        self.priority_table.delete(*self.priority_table.get_children())
+        for part in state["priority"]:
+            self.priority_table.insert("", "end", values=(part, self.capacities[part] or "미인식 · 수동 순서"))
+        self.net_list.selection_clear(0, "end")
+        for index, net in enumerate(self.net_list.get(0, "end")):
+            if net in state["selected_nets"]:
+                self.net_list.selection_set(index)
+        self.alias_label.set("; ".join(f"{k} → {v}" for k, v in self.aliases.items()) or "등록된 별칭 없음")
+        self.render_commands()
+        self.refresh_views()
+        self.invalidate()
+        self._last_state = self.snapshot()
+        self._tracking = True
+        self.update_history_menu()
+
+    def undo(self, _event=None):
+        if self._undo:
+            self._redo.append(self.snapshot())
+            self.restore(self._undo.pop())
+            self.notice.set("실행 취소 · 두 탭에 반영했습니다.")
+        return "break"
+
+    def redo(self, _event=None):
+        if self._redo:
+            self._undo.append(self.snapshot())
+            self.restore(self._redo.pop())
+            self.notice.set("다시 실행 · 두 탭에 반영했습니다.")
+        return "break"
+
+    def refresh_views(self):
+        self.refresh_scope()
+        if hasattr(self, "board"):
+            rows = [dict(r, size=self.part_metadata(r["component"]).get("size"),
+                         capacitance_pf=self.part_metadata(r["component"]).get("capacitance_pf"),
+                         metadata_source=self.part_metadata(r["component"]).get("source", "")) for r in self.records]
+            self.board.set_records(rows, self.board_geometry)
+        if hasattr(self, "save_button"):
+            self.save_button.configure(state="normal" if self.records else "disabled")
+
+    def invalidate(self, *_):
+        self.result = None
+        if hasattr(self, "apply_button"):
+            self.apply_button.configure(state="disabled")
+        if hasattr(self, "change_table"):
+            self.preview_label.set("현재 상태에서 다시 계산하세요. 미리보기는 적용 전입니다.")
+            for tree in (self.change_table, self.summary_table):
+                tree.delete(*tree.get_children())
+            self.details.delete("1.0", "end")
+        if self._tracking:
+            self.remember()
+
+    def apply_preview(self):
+        if not self.result or not self.result["ok"]:
+            return
+        try:
+            self.spd_layout.validate_records(self.result["records"])
+        except ValueError as exc:
+            messagebox.showerror("SPD 적용 불가", str(exc), parent=self)
+            return
+        self.records = deepcopy(self.result["records"])
+        self.manual = []
+        self.rearrange.set(False)
+        self.render_commands()
+        self.render_policies()
+        self.refresh_views()
+        self.invalidate()
+        self.notice.set("명령을 적용했습니다. 도면과 현재 수량에 반영되었습니다.")
+
+    def apply_selection(self, refdes, status):
+        if status not in ADJUSTABLE_STATUSES or not refdes:
+            return
+        chosen = [r for r in self.records if r["refdes"] in refdes]
+        if len(chosen) != len(refdes) or any(effective_status(r) not in ADJUSTABLE_STATUSES for r in chosen):
+            messagebox.showerror("선택 적용", "현재 조정 가능한 decap을 선택하세요.", parent=self)
+            return
+        for row in chosen:
+            if effective_status(row) != status:
+                row["status"] = status
+        self.refresh_views()
+        self.invalidate()
+        self.notice.set(f"선택 {len(chosen):,}자리 {status} 적용 · 수량 탭에 반영했습니다.")
 
     def edit_aliases(self):
         value = simpledialog.askstring("명시적 별칭", "명령표 이름 = 실제 부품명\n여러 개는 줄바꿈 대신 ; 로 구분하세요. 빈 입력은 모두 삭제합니다.",
@@ -544,8 +770,8 @@ class App(tk.Tk):
     def build_layout(self):
         page = self.pages[2]
         self.rearrange = tk.BooleanVar(value=False)
-        ttk.Checkbutton(page, text="명령 처리 후 용량/우선순위에 따라 자리 재배치 (component와 status 쌍 이동)", variable=self.rearrange, command=self.invalidate).pack(anchor="w")
-        ttk.Label(page, text="기본은 status 증감만 수행합니다. 재배치는 아래 선택 NET과 목록의 부품만 대상이며 Disabled 자리도 포함합니다.").pack(anchor="w", pady=5)
+        ttk.Checkbutton(page, text="명령 처리 후 부품·상태 재배치", variable=self.rearrange, command=self.invalidate).pack(anchor="w")
+        ttk.Label(page, text="용량/우선순위에 따라 Component와 Status 쌍을 이동합니다. 선택 NET·부품만 대상이며 비활성 자리도 포함합니다.", wraplength=760).pack(anchor="w", pady=5)
         upper = ttk.Frame(page)
         upper.pack(fill="both", expand=True)
         left = ttk.LabelFrame(upper, text="재배치 대상 NET (Ctrl/Shift로 선택)", padding=8)
@@ -606,7 +832,9 @@ class App(tk.Tk):
         comp = self.priority_table.item(item, "values")[0]
         value = simpledialog.askfloat("용량 수정", f"{comp}\n용량을 pF로 입력 (1 nF=1000 pF, 1 µF=1000000 pF)", minvalue=0.000001, parent=self)
         if value is not None and math.isfinite(value):
+            self.metadata_overrides[comp] = {**self.part_metadata(comp), "capacitance_pf": value, "source": "Manual"}
             self.capacities[comp] = value
+            self.refresh_views()
             self.priority_table.item(item, values=(comp, value))
             self.sort_current_priority()
             self.invalidate()
@@ -620,7 +848,7 @@ class App(tk.Tk):
                 self.priority_table.delete(item)
         added = False
         for component in sorted(allowed - set(self.capacities)):
-            capacity = parse_capacitance(component)
+            capacity = self.part_metadata(component).get("capacitance_pf")
             self.capacities[component] = capacity
             self.priority_table.insert("", "end", values=(component, capacity if capacity is not None else "미인식 · 수동 순서"))
             added = True
@@ -666,7 +894,7 @@ class App(tk.Tk):
         direction.current(0)
         status = ttk.Combobox(panel, values=["Disabled만", "Automatic과 Disabled 모두"], state="readonly", width=36)
         status.current(1)
-        for row, (label, widget) in enumerate([("추가할 부품 (새 이름 가능)", target), ("가져올 부품", donor), ("자리 선택", direction), ("가져올 부품의 상태", status)], 1):
+        for row, (label, widget) in enumerate([("추가할 부품", target), ("가져올 부품", donor), ("자리 선택", direction), ("가져올 부품의 상태", status)], 1):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 12))
             widget.grid(row=row, column=1, sticky="w", pady=6)
         ttk.Label(panel, text="활성 수량은 먼 Disabled에서 보정하며, 부족하면 원본 부품의 규칙으로 이어집니다.").grid(row=5, column=0, columnspan=2, sticky="w", pady=12)
@@ -703,6 +931,8 @@ class App(tk.Tk):
         page = self.pages[3]
         self.preview_label = tk.StringVar(value="계산 전입니다. 오류가 있으면 저장할 수 없습니다.")
         ttk.Label(page, textvariable=self.preview_label, font=("Malgun Gothic", 12, "bold")).pack(anchor="w", pady=6)
+        self.apply_button = ttk.Button(page, text="명령 결과 적용 · 두 탭에 반영", command=self.apply_preview, state="disabled", style="Primary.TButton")
+        self.apply_button.pack(anchor="e", pady=(0, 6))
         notebook = ttk.Notebook(page)
         notebook.pack(fill="both", expand=True)
         change, summary, details = (ttk.Frame(notebook, padding=6) for _ in range(3))
@@ -723,16 +953,11 @@ class App(tk.Tk):
     def preview(self):
         self.invalidate()
         try:
-            if not self.records or not ("spd" in self.paths or {"distance", "refdes"} <= self.paths.keys()):
-                raise ValueError("SPD 한 개 또는 Distance·RefDes Excel 두 개를 먼저 불러오세요.")
+            if not self.records or "spd" not in self.paths:
+                raise ValueError("SPD 파일을 먼저 불러오세요.")
             if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
                 raise ValueError("입력 파일이 변경되었습니다. 파일을 다시 불러오세요.")
-            if self.mode.get() == "excel":
-                if "commands" not in self.paths:
-                    raise ValueError("명령 Excel을 선택하거나 직접 입력 모드를 선택하세요.")
-                commands = read_commands(self.paths["commands"], self.mappings["commands"])
-            else:
-                commands = self.manual
+            commands = self.manual
             nets = [self.net_list.get(i) for i in self.net_list.curselection()]
             priority = [self.priority_table.item(i, "values")[0] for i in self.priority_table.get_children()]
             if not commands and not self.rearrange.get():
@@ -754,7 +979,7 @@ class App(tk.Tk):
             self.show_result()
         except Exception as exc:
             self.result = None
-            self.preview_label.set("입력 오류 · 저장 불가")
+            self.preview_label.set("입력 오류 · 적용 불가")
             self.details.insert("end", str(exc))
             self.notice.set("입력과 설정을 확인하세요.")
             messagebox.showerror("계산할 수 없습니다", str(exc), parent=self)
@@ -798,7 +1023,7 @@ class App(tk.Tk):
         if self.result["ok"] or not any(i["code"] in ("shortage", "compensation_shortage") for i in self.result["issues"]):
             return
         self.result["issues"].append(dict(level="info", code="conversion_guidance", message=
-            "'3 배치 · 변환'에서 부족한 부품과 그 원본 부품의 규칙이 이어지는지 확인하세요. "
+            "'배치 · 변환'에서 부족한 부품과 그 원본 부품의 규칙이 이어지는지 확인하세요. "
             "연쇄의 마지막 용량에서도 자리나 활성 수량 보정분이 부족하면 계산할 수 없습니다. "
             "규칙을 사용할 때는 '아래 변환 규칙 사용'을 켜세요. "
             "같은 용량의 부품이 여러 종류이면 '규칙 추가'로 직접 지정해야 합니다."))
@@ -835,6 +1060,14 @@ class App(tk.Tk):
             self.result = trial
 
     def show_result(self):
+        if self.result["ok"]:
+            try:
+                self.spd_layout.validate_records(self.result["records"])
+            except ValueError as exc:
+                rejected = self.result
+                self.result = compute(self.records, [])
+                self.result.update(ok=False, issues=[*rejected["issues"], dict(level="error", code="spd_compatibility", message=str(exc))],
+                                   actions=[dict(action, applied=False) for action in rejected["actions"]])
         result = self.result
         for row in result["changes"]:
             self.change_table.insert("", "end", values=[row.get(c, "") for c in self.change_table["columns"]])
@@ -850,26 +1083,33 @@ class App(tk.Tk):
                                 f"{action.get('reason', '')}{' (전체 취소됨)' if not action.get('applied', True) else ''}\n\n")
         label = f"검증 {'통과' if result['ok'] else '실패'} · {len(result['changes']):,}개 RefDes 변경 · {len(result['summary']):,}개 수량 조합"
         self.preview_label.set(label)
-        self.notice.set("변경과 수량을 검토한 뒤 결과를 저장하세요." if result["ok"] else "오류가 있어 결과를 저장하지 않습니다. 검증 탭을 확인하세요.")
-        self.save_button.configure(state="normal" if result["ok"] else "disabled")
-        self.tabs.select(self.pages[3])
+        self.notice.set("변경과 수량을 검토한 뒤 명령 결과를 적용하세요." if result["ok"] else "오류가 있어 결과를 저장하지 않습니다. 검증 탭을 확인하세요.")
+        self.apply_button.configure(state="normal" if result["ok"] else "disabled")
+        self.tabs.select(0)
+        self.command_tabs.select(self.pages[3])
 
     def save(self):
-        if not self.result or not self.result["ok"]:
+        if not self.records or self.spd_layout is None:
             return
-        directory = filedialog.askdirectory(title="결과를 저장할 폴더 (새 하위 폴더 생성)")
-        if not directory:
+        if self.manual or (self.result and self.result["ok"]):
+            if not messagebox.askyesno("적용된 상태 저장", "아직 적용하지 않은 명령 또는 미리보기가 있습니다.\n현재 두 탭에 적용된 상태만 저장하시겠습니까?", default="no", parent=self):
+                return
+        path = filedialog.asksaveasfilename(title="적용된 상태를 새 SPD로 저장", defaultextension=".spd",
+                                          initialfile=Path(self.paths["spd"]).stem + "_adjusted.spd",
+                                          filetypes=[("Cadence Sigrity SPD", "*.spd")])
+        if not path:
             return
         try:
-            if any(fingerprint(self.paths[k]) != h for k, h in self.hashes.items()):
-                self.invalidate()
-                raise ValueError("미리보기 이후 입력 파일이 변경되었습니다. 다시 불러와 계산하세요.")
-            if "spd" in self.paths:
-                paths = export_spd_results(self.paths["spd"], self.spd_layout, *self.spd_selection, self.result, directory)
-            else:
-                paths = export_results(self.paths["refdes"], self.mappings["refdes"], self.result, directory)
-            self.notice.set(f"저장 완료: {Path(paths[0]).parent}")
-            messagebox.showinfo("저장 완료", "\n".join(str(p) for p in paths), parent=self)
+            overrides = {part: {key: values.get(key) for key in ("size", "capacitance_pf")}
+                         for part, values in self.metadata_overrides.items()}
+            saved = run_spd_task(self, "SPD 저장 · 재검증", "새 파일을 기록하고 다시 읽어 검증하고 있습니다.",
+                                 lambda: save_spd(self.paths["spd"], self.spd_layout, self.records, path,
+                                                  component_metadata=overrides))
+            self._saved_state = self.snapshot()
+            # Pending instructions are not persisted by an SPD document.
+            self._saved_state["manual"] = []
+            self.notice.set(f"저장 완료: {saved}")
+            messagebox.showinfo("SPD 저장 완료", f"{saved}\n원본 SPD는 보존했습니다.", parent=self)
         except Exception as exc:
             messagebox.showerror("저장 실패", str(exc), parent=self)
 

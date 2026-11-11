@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Decap Adjustment 도움말</title></head>
+<body>
+<h1 id="top">Decap Adjustment 2.0.0 도움말</h1>
+<p>SPD 파일의 decap 상태와 배치를 검토·조정한 뒤 새 SPD로 저장하는 안내.</p>
+<h2>목차</h2>
+<ul>
+  <li><a href="#scope">파일과 대상 범위</a></li>
+  <li><a href="#commands">1 / 거리 기준 · 수량 조절</a></li>
+  <li><a href="#board">2 / 도면 · 직접 선택</a></li>
+  <li><a href="#metadata">부품 크기·용량</a></li>
+  <li><a href="#save">적용, 실행 취소, 저장</a></li>
+</ul>
+
+<h2 id="scope">파일과 대상 범위</h2>
+<p><b>SPD 열기…</b>에서 Cadence Sigrity SPD 파일을 연 뒤 <b>거리 기준 · 대상…</b>에서 기준 부품과 대상 decap 종류를 지정할 것. 두 작업 탭은 같은 SPD와 작업 상태를 사용함.</p>
+<p>거리 기준은 같은 NET에 연결된 부품 pad와 기준 pin 사이의 최단 XY 거리이며 µm 단위. 배선 길이나 부품 중심 간 거리가 아님.</p>
+
+<h2 id="commands">1 / 거리 기준 · 수량 조절</h2>
+<h3>명령 목록</h3>
+<p>NET, 채널, 사이트, 부품명으로 대상을 검색할 것. <code>A +/- N</code> 또는 <code>D +/- N</code> 명령을 큐에 추가·수정·삭제할 것.</p>
+<ul>
+  <li><code>A</code>: 가까운 자리부터 선택. <code>D</code>: 먼 자리부터 선택.</li>
+  <li><code>+N</code>: 활성화. <code>-N</code>: 비활성화. 예: <code>A-2,D+1</code>.</li>
+  <li><b>명령 Excel 가져오기…</b>는 명령만 읽어 현재 편집 가능한 큐 뒤에 추가함. 기존 큐를 대체하지 않음.</li>
+  <li>명령 Excel은 증감 명령 입력용. RefDes나 distance 표를 불러오거나 Excel 보고서를 저장하지 않음.</li>
+</ul>
+
+<h3>배치 · 변환</h3>
+<p>선택 NET, 재배치 여부와 우선순위, 부족분 변환 규칙을 설정할 것. 부품 이름이 다른 경우 명시적 별칭을 지정할 것. 이름을 자동 추측하지 않음.</p>
+
+<h3>계산 미리보기</h3>
+<p>변경 RefDes·상태·부품, NET·부품별 자리 수량과 검증 결과를 검토할 것. 성공한 미리보기 결과는 아직 작업 상태에 적용되지 않음. <b>명령 결과 적용 · 두 탭에 반영</b>을 눌러 적용할 것. 적용된 명령 큐는 비워짐.</p>
+<p>검증 오류가 있으면 적용 불가. 자리 부족 선택이나 변환 설정을 조정하고 다시 계산할 것.</p>
+
+<h2 id="board">2 / 도면 · 직접 선택</h2>
+<p>SPD 물리 좌표에 있는 대상 pad와 부품 몸체를 표시함. 구리 면(mesh)이나 배선 형상은 표시하지 않음.</p>
+<ul>
+  <li>표시할 면을 <code>Top</code>, <code>Bottom</code>, <code>Unknown</code>으로 전환할 것. 면은 SPD 정보에서 판별하며 사용자가 위치 면을 지정할 수 없음. Bottom 보기에는 <b>Bottom 좌우 반전 (X)</b> 옵션 제공.</li>
+  <li>마우스 클릭·드래그로 자리를 선택하고 Ctrl+클릭 또는 Ctrl+드래그로 선택을 추가할 것.</li>
+  <li>검색 표에서 채널, 사이트, NET, RefDes, 크기와 용량을 확인할 것.</li>
+  <li>선택한 자리를 <code>Automatic</code>으로 활성화하거나 <code>Disabled</code>로 비활성화할 것.</li>
+</ul>
+<p>도면 편집은 선택한 RefDes의 실제 상태를 바꾸며 거리 기준 탭에도 즉시 반영됨. SPD에서 면을 판별하지 못한 자리는 <code>Unknown</code> 보기에서 확인할 것.</p>
+
+<h2 id="metadata">부품 크기·용량</h2>
+<p>SPD의 <code>.PartialCkt</code> SPICE 주석에서 공칭 용량과 크기를 읽음. <code>Description</code>, <code>Property</code>, <code>Nominal Capacitance</code>, <code>Case Size</code>, <code>Package</code>, <code>Size</code> 등의 표기를 지원함.</p>
+<p>정보가 없거나 인식하지 못하면 미인식으로 유지. 부품명만으로 크기·용량을 추정하지 말 것. <b>부품 정보…</b>에서 종류별 크기와 용량(pF)을 직접 입력 가능.</p>
+<p>수동 정보는 SPD의 <code>DecapAdjustment TypeMetadata</code> 특수 주석으로 저장됨. 회로 모델 값과 전기적 연결은 변경하지 않음.</p>
+
+<h2 id="save">적용, 실행 취소, 저장</h2>
+<p><b>편집 → 실행 취소 / 다시 실행</b>, <code>Ctrl+Z</code> / <code>Ctrl+Y</code>로 명령 큐, 설정, 수동 부품 정보와 상태 편집을 되돌릴 것. 변경은 두 탭에 함께 반영됨.</p>
+<p><b>SPD 다른 이름으로 저장…</b>은 현재 적용된 상태만 새 SPD 파일로 저장함. 미적용 명령은 저장되지 않으며, 미적용 명령이나 성공한 미리보기가 있으면 확인 창이 표시됨. 원본을 보존하고 기존 파일도 덮어쓰지 않음.</p>
+<p>원본 SPD가 불러온 뒤 변경되면 저장을 거부함. 별도 Excel 검증·감사 보고서는 생성하지 않음.</p>
+<p><a href="#top">맨 위로</a></p>
+</body>
+</html>

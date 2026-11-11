@@ -4,24 +4,23 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from .engine import parse_capacitance
 from .spd import read_spd
 
 
-def open_spd(parent, path):
+def run_spd_task(parent, title, detail, action):
     window = tk.Toplevel(parent)
-    window.title("SPD 읽기")
+    window.title(title)
     window.transient(parent)
     window.protocol("WM_DELETE_WINDOW", lambda: None)
     box = ttk.Frame(window, padding=20)
     box.pack(fill="both", expand=True)
-    ttk.Label(box, text=f"{Path(path).name}\n부품 연결과 핀 좌표를 읽고 있습니다.").pack(anchor="w")
+    ttk.Label(box, text=detail).pack(anchor="w")
     progress = ttk.Progressbar(box, mode="indeterminate", length=330)
     progress.pack(fill="x", pady=(12, 0))
     progress.start()
     window.grab_set()
     with ThreadPoolExecutor(max_workers=1) as worker:
-        task = worker.submit(read_spd, path)
+        task = worker.submit(action)
 
         def poll():
             if task.done():
@@ -32,6 +31,10 @@ def open_spd(parent, path):
         window.after(100, poll)
         parent.wait_window(window)
         return task.result()
+
+
+def open_spd(parent, path):
+    return run_spd_task(parent, "SPD 읽기", f"{Path(path).name}\n부품 연결과 핀 좌표를 읽고 있습니다.", lambda: read_spd(path))
 
 
 class SpdScopeDialog(simpledialog.Dialog):
@@ -61,7 +64,7 @@ class SpdScopeDialog(simpledialog.Dialog):
         for name in names:
             item = self.targets.insert("", "end", values=(name, self.layout.components[name]))
             selected = name in self.selection[1] if self.selection else (
-                name.upper().startswith("CAP") or parse_capacitance(name) is not None)
+                name.upper().startswith("CAP") or self.layout.component_metadata.get(name, {}).get("capacitance_pf") is not None)
             if selected:
                 self.targets.selection_add(item)
         references = [name for name in names if any(token in name.upper() for token in ("DUT", "LGA", "BUMP"))]

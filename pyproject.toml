@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "decap-adjustment"
-version = "1.3.0"
-description = "Preview and audit SPD and Excel decap status adjustments and distance placement"
+version = "2.0.0"
+description = "Edit SPD decap states through distance commands and interactive pin layout"
 requires-python = ">=3.12"
 dependencies = ["openpyxl==3.1.5"]
 license = "MIT"

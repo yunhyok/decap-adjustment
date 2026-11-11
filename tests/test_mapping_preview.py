@@ -70,9 +70,9 @@ def inspect_dialog(monkeypatch):
                 dialog.destroy()
 
         monkeypatch.setattr(tk.Toplevel, "wait_window", wait_window)
-        MappingDialog(parent, path, "refdes", {
+        MappingDialog(parent, path, "commands", {
             "sheet": "Fictional", "header_row": 4,
-            "columns": {"refdes": 2, "net": 5, "component": 6, "status": 8},
+            "columns": {"net": 5, "component": 6, "expression": 8},
         })
 
     yield inspect

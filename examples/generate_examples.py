@@ -25,35 +25,31 @@ def save(path, title, rows, header_row=1):
 def generate(directory=None):
     directory = Path(directory or Path(__file__).parent)
     directory.mkdir(parents=True, exist_ok=True)
-    refdes = [["Component", "RefDes Name", "Activation Status", "Net Name", "User note"]]
-    distances = [["Synthetic example: distance uses exact RefDes + NET"], [], ["REFDES", "NET Name", "Distance [um]", "Component type"]]
     components = ["CAP_0603M_10NF", "CAP_0603M_100NF", "CAP_0603M_1UF", "CAP_0603M_4U7F"]
     nodes, connections, references = [], [], []
     index = 1
     for site in (0, 1):
         net = f"U{site}_DEMO_VDD"
         x0 = site * 2000
-        nodes.append(f"NodeD{site}!!P::{net} X = {x0}um Y = 0um")
+        nodes.append(f"NodeD{site}!!P::{net} X = {x0}um Y = 0um Layer = Signal$TOP")
         references.append(f".Connect SITE{site} DEMO_DUT\nP $Package.NodeD{site}!!P::{net}\n.EndC")
         for part, component in enumerate(components):
             for slot in range(4):
                 ref = f"C{index}"
                 status = "Automatic" if slot < 2 else "Disabled"
                 distance = (part + 1) * 100 + slot * 10
-                refdes.append([component, ref, status, net, "Fictional fixture"])
-                distances.append([ref, net, distance, "CAP_OLD_NAME"])
-                nodes += [f"Node{index}P!!1::{net} X = {x0 + distance}um Y = 0um",
-                          f"Node{index}G!!2::DGND X = {x0 + distance}um Y = 40um"]
+                nodes += [f"Node{index}P!!1::{net} X = {x0 + distance}um Y = 0um Layer = Signal${'TOP' if site == 0 else 'BOTTOM'}",
+                          f"Node{index}G!!2::DGND X = {x0 + distance}um Y = 40um Layer = Signal${'TOP' if site == 0 else 'BOTTOM'}"]
                 usage = " Usage = 0b111000" if status == "Disabled" else ""
                 connections.append(f".Connect {ref} {component}{usage}\n1 $Package.Node{index}P!!1::{net}\n2 $Package.Node{index}G!!2::DGND\n.EndC")
                 index += 1
-    refdes.append(["ALIGN_MARK", "M1", "Enabled", None, "Must remain unchanged"])
     (directory / "board.spd").write_text("\n".join([
-        "* Synthetic distance and RefDes example", ".Package $Package", *nodes, ".EndPackage",
+        "* Synthetic distance and RefDes example",
+        *[f".Part {name} Outline = 600um 300um\n.EndPart" for name in components],
+        *[f".PartialCkt {name} ExtNode = 1 2\n* Size : 0603M\n* Capacitance : {value}[nF]\n.EndPartialCkt" for name, value in zip(components, (10, 100, 1000, 4700))],
+        ".Package $Package", *nodes, ".EndPackage",
         *connections, ".Connect M1 ALIGN_MARK Usage = 0b1000\n.EndC", *references, ""
     ]), encoding="utf-8")
-    save(directory / "refdes.xlsx", "RefDes", refdes)
-    save(directory / "distance.xlsx", "Ranked Caps", distances, header_row=3)
     save(directory / "commands.xlsx", "Adjustments", [
         ["Synthetic commands; only named NET/component pairs change"],
         ["Channel / [mΩ]", "SITE", *components],
@@ -66,7 +62,7 @@ def generate(directory=None):
         ["U1_DEMO_VDD", "CAP_0603M_4U7F", "D+1"],
     ])
     assert all((directory / filename).is_file() for filename in (
-        "refdes.xlsx", "distance.xlsx", "commands.xlsx", "commands_tall.xlsx"))
+        "commands.xlsx", "commands_tall.xlsx", "board.spd"))
 
 
 if __name__ == "__main__":

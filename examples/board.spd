@@ -1,71 +1,95 @@
 * Synthetic distance and RefDes example
+.Part CAP_0603M_10NF Outline = 600um 300um
+.EndPart
+.Part CAP_0603M_100NF Outline = 600um 300um
+.EndPart
+.Part CAP_0603M_1UF Outline = 600um 300um
+.EndPart
+.Part CAP_0603M_4U7F Outline = 600um 300um
+.EndPart
+.PartialCkt CAP_0603M_10NF ExtNode = 1 2
+* Size : 0603M
+* Capacitance : 10[nF]
+.EndPartialCkt
+.PartialCkt CAP_0603M_100NF ExtNode = 1 2
+* Size : 0603M
+* Capacitance : 100[nF]
+.EndPartialCkt
+.PartialCkt CAP_0603M_1UF ExtNode = 1 2
+* Size : 0603M
+* Capacitance : 1000[nF]
+.EndPartialCkt
+.PartialCkt CAP_0603M_4U7F ExtNode = 1 2
+* Size : 0603M
+* Capacitance : 4700[nF]
+.EndPartialCkt
 .Package $Package
-NodeD0!!P::U0_DEMO_VDD X = 0um Y = 0um
-Node1P!!1::U0_DEMO_VDD X = 100um Y = 0um
-Node1G!!2::DGND X = 100um Y = 40um
-Node2P!!1::U0_DEMO_VDD X = 110um Y = 0um
-Node2G!!2::DGND X = 110um Y = 40um
-Node3P!!1::U0_DEMO_VDD X = 120um Y = 0um
-Node3G!!2::DGND X = 120um Y = 40um
-Node4P!!1::U0_DEMO_VDD X = 130um Y = 0um
-Node4G!!2::DGND X = 130um Y = 40um
-Node5P!!1::U0_DEMO_VDD X = 200um Y = 0um
-Node5G!!2::DGND X = 200um Y = 40um
-Node6P!!1::U0_DEMO_VDD X = 210um Y = 0um
-Node6G!!2::DGND X = 210um Y = 40um
-Node7P!!1::U0_DEMO_VDD X = 220um Y = 0um
-Node7G!!2::DGND X = 220um Y = 40um
-Node8P!!1::U0_DEMO_VDD X = 230um Y = 0um
-Node8G!!2::DGND X = 230um Y = 40um
-Node9P!!1::U0_DEMO_VDD X = 300um Y = 0um
-Node9G!!2::DGND X = 300um Y = 40um
-Node10P!!1::U0_DEMO_VDD X = 310um Y = 0um
-Node10G!!2::DGND X = 310um Y = 40um
-Node11P!!1::U0_DEMO_VDD X = 320um Y = 0um
-Node11G!!2::DGND X = 320um Y = 40um
-Node12P!!1::U0_DEMO_VDD X = 330um Y = 0um
-Node12G!!2::DGND X = 330um Y = 40um
-Node13P!!1::U0_DEMO_VDD X = 400um Y = 0um
-Node13G!!2::DGND X = 400um Y = 40um
-Node14P!!1::U0_DEMO_VDD X = 410um Y = 0um
-Node14G!!2::DGND X = 410um Y = 40um
-Node15P!!1::U0_DEMO_VDD X = 420um Y = 0um
-Node15G!!2::DGND X = 420um Y = 40um
-Node16P!!1::U0_DEMO_VDD X = 430um Y = 0um
-Node16G!!2::DGND X = 430um Y = 40um
-NodeD1!!P::U1_DEMO_VDD X = 2000um Y = 0um
-Node17P!!1::U1_DEMO_VDD X = 2100um Y = 0um
-Node17G!!2::DGND X = 2100um Y = 40um
-Node18P!!1::U1_DEMO_VDD X = 2110um Y = 0um
-Node18G!!2::DGND X = 2110um Y = 40um
-Node19P!!1::U1_DEMO_VDD X = 2120um Y = 0um
-Node19G!!2::DGND X = 2120um Y = 40um
-Node20P!!1::U1_DEMO_VDD X = 2130um Y = 0um
-Node20G!!2::DGND X = 2130um Y = 40um
-Node21P!!1::U1_DEMO_VDD X = 2200um Y = 0um
-Node21G!!2::DGND X = 2200um Y = 40um
-Node22P!!1::U1_DEMO_VDD X = 2210um Y = 0um
-Node22G!!2::DGND X = 2210um Y = 40um
-Node23P!!1::U1_DEMO_VDD X = 2220um Y = 0um
-Node23G!!2::DGND X = 2220um Y = 40um
-Node24P!!1::U1_DEMO_VDD X = 2230um Y = 0um
-Node24G!!2::DGND X = 2230um Y = 40um
-Node25P!!1::U1_DEMO_VDD X = 2300um Y = 0um
-Node25G!!2::DGND X = 2300um Y = 40um
-Node26P!!1::U1_DEMO_VDD X = 2310um Y = 0um
-Node26G!!2::DGND X = 2310um Y = 40um
-Node27P!!1::U1_DEMO_VDD X = 2320um Y = 0um
-Node27G!!2::DGND X = 2320um Y = 40um
-Node28P!!1::U1_DEMO_VDD X = 2330um Y = 0um
-Node28G!!2::DGND X = 2330um Y = 40um
-Node29P!!1::U1_DEMO_VDD X = 2400um Y = 0um
-Node29G!!2::DGND X = 2400um Y = 40um
-Node30P!!1::U1_DEMO_VDD X = 2410um Y = 0um
-Node30G!!2::DGND X = 2410um Y = 40um
-Node31P!!1::U1_DEMO_VDD X = 2420um Y = 0um
-Node31G!!2::DGND X = 2420um Y = 40um
-Node32P!!1::U1_DEMO_VDD X = 2430um Y = 0um
-Node32G!!2::DGND X = 2430um Y = 40um
+NodeD0!!P::U0_DEMO_VDD X = 0um Y = 0um Layer = Signal$TOP
+Node1P!!1::U0_DEMO_VDD X = 100um Y = 0um Layer = Signal$TOP
+Node1G!!2::DGND X = 100um Y = 40um Layer = Signal$TOP
+Node2P!!1::U0_DEMO_VDD X = 110um Y = 0um Layer = Signal$TOP
+Node2G!!2::DGND X = 110um Y = 40um Layer = Signal$TOP
+Node3P!!1::U0_DEMO_VDD X = 120um Y = 0um Layer = Signal$TOP
+Node3G!!2::DGND X = 120um Y = 40um Layer = Signal$TOP
+Node4P!!1::U0_DEMO_VDD X = 130um Y = 0um Layer = Signal$TOP
+Node4G!!2::DGND X = 130um Y = 40um Layer = Signal$TOP
+Node5P!!1::U0_DEMO_VDD X = 200um Y = 0um Layer = Signal$TOP
+Node5G!!2::DGND X = 200um Y = 40um Layer = Signal$TOP
+Node6P!!1::U0_DEMO_VDD X = 210um Y = 0um Layer = Signal$TOP
+Node6G!!2::DGND X = 210um Y = 40um Layer = Signal$TOP
+Node7P!!1::U0_DEMO_VDD X = 220um Y = 0um Layer = Signal$TOP
+Node7G!!2::DGND X = 220um Y = 40um Layer = Signal$TOP
+Node8P!!1::U0_DEMO_VDD X = 230um Y = 0um Layer = Signal$TOP
+Node8G!!2::DGND X = 230um Y = 40um Layer = Signal$TOP
+Node9P!!1::U0_DEMO_VDD X = 300um Y = 0um Layer = Signal$TOP
+Node9G!!2::DGND X = 300um Y = 40um Layer = Signal$TOP
+Node10P!!1::U0_DEMO_VDD X = 310um Y = 0um Layer = Signal$TOP
+Node10G!!2::DGND X = 310um Y = 40um Layer = Signal$TOP
+Node11P!!1::U0_DEMO_VDD X = 320um Y = 0um Layer = Signal$TOP
+Node11G!!2::DGND X = 320um Y = 40um Layer = Signal$TOP
+Node12P!!1::U0_DEMO_VDD X = 330um Y = 0um Layer = Signal$TOP
+Node12G!!2::DGND X = 330um Y = 40um Layer = Signal$TOP
+Node13P!!1::U0_DEMO_VDD X = 400um Y = 0um Layer = Signal$TOP
+Node13G!!2::DGND X = 400um Y = 40um Layer = Signal$TOP
+Node14P!!1::U0_DEMO_VDD X = 410um Y = 0um Layer = Signal$TOP
+Node14G!!2::DGND X = 410um Y = 40um Layer = Signal$TOP
+Node15P!!1::U0_DEMO_VDD X = 420um Y = 0um Layer = Signal$TOP
+Node15G!!2::DGND X = 420um Y = 40um Layer = Signal$TOP
+Node16P!!1::U0_DEMO_VDD X = 430um Y = 0um Layer = Signal$TOP
+Node16G!!2::DGND X = 430um Y = 40um Layer = Signal$TOP
+NodeD1!!P::U1_DEMO_VDD X = 2000um Y = 0um Layer = Signal$TOP
+Node17P!!1::U1_DEMO_VDD X = 2100um Y = 0um Layer = Signal$BOTTOM
+Node17G!!2::DGND X = 2100um Y = 40um Layer = Signal$BOTTOM
+Node18P!!1::U1_DEMO_VDD X = 2110um Y = 0um Layer = Signal$BOTTOM
+Node18G!!2::DGND X = 2110um Y = 40um Layer = Signal$BOTTOM
+Node19P!!1::U1_DEMO_VDD X = 2120um Y = 0um Layer = Signal$BOTTOM
+Node19G!!2::DGND X = 2120um Y = 40um Layer = Signal$BOTTOM
+Node20P!!1::U1_DEMO_VDD X = 2130um Y = 0um Layer = Signal$BOTTOM
+Node20G!!2::DGND X = 2130um Y = 40um Layer = Signal$BOTTOM
+Node21P!!1::U1_DEMO_VDD X = 2200um Y = 0um Layer = Signal$BOTTOM
+Node21G!!2::DGND X = 2200um Y = 40um Layer = Signal$BOTTOM
+Node22P!!1::U1_DEMO_VDD X = 2210um Y = 0um Layer = Signal$BOTTOM
+Node22G!!2::DGND X = 2210um Y = 40um Layer = Signal$BOTTOM
+Node23P!!1::U1_DEMO_VDD X = 2220um Y = 0um Layer = Signal$BOTTOM
+Node23G!!2::DGND X = 2220um Y = 40um Layer = Signal$BOTTOM
+Node24P!!1::U1_DEMO_VDD X = 2230um Y = 0um Layer = Signal$BOTTOM
+Node24G!!2::DGND X = 2230um Y = 40um Layer = Signal$BOTTOM
+Node25P!!1::U1_DEMO_VDD X = 2300um Y = 0um Layer = Signal$BOTTOM
+Node25G!!2::DGND X = 2300um Y = 40um Layer = Signal$BOTTOM
+Node26P!!1::U1_DEMO_VDD X = 2310um Y = 0um Layer = Signal$BOTTOM
+Node26G!!2::DGND X = 2310um Y = 40um Layer = Signal$BOTTOM
+Node27P!!1::U1_DEMO_VDD X = 2320um Y = 0um Layer = Signal$BOTTOM
+Node27G!!2::DGND X = 2320um Y = 40um Layer = Signal$BOTTOM
+Node28P!!1::U1_DEMO_VDD X = 2330um Y = 0um Layer = Signal$BOTTOM
+Node28G!!2::DGND X = 2330um Y = 40um Layer = Signal$BOTTOM
+Node29P!!1::U1_DEMO_VDD X = 2400um Y = 0um Layer = Signal$BOTTOM
+Node29G!!2::DGND X = 2400um Y = 40um Layer = Signal$BOTTOM
+Node30P!!1::U1_DEMO_VDD X = 2410um Y = 0um Layer = Signal$BOTTOM
+Node30G!!2::DGND X = 2410um Y = 40um Layer = Signal$BOTTOM
+Node31P!!1::U1_DEMO_VDD X = 2420um Y = 0um Layer = Signal$BOTTOM
+Node31G!!2::DGND X = 2420um Y = 40um Layer = Signal$BOTTOM
+Node32P!!1::U1_DEMO_VDD X = 2430um Y = 0um Layer = Signal$BOTTOM
+Node32G!!2::DGND X = 2430um Y = 40um Layer = Signal$BOTTOM
 .EndPackage
 .Connect C1 CAP_0603M_10NF
 1 $Package.Node1P!!1::U0_DEMO_VDD

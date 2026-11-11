@@ -19,13 +19,13 @@ def test_bundled_integration():
     from decap_manager.self_test import self_test
     report = self_test()
     assert report["ok"]
-    assert report["rows"] == 33
+    assert report["rows"] == 32
     assert report["changed_refdes"] == 6
 
 
 def test_manual_priority_changes_placement_and_invalidates_preview(app):
     app.load_examples()
-    app.mode.set("direct")
+    app.manual = []
     app.rearrange.set(True)
     app.net_list.selection_set(0)
     app.preview()
@@ -34,7 +34,7 @@ def test_manual_priority_changes_placement_and_invalidates_preview(app):
     app.priority_table.selection_set(first)
     app.move_priority(1)
     assert app.result is None
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
     app.preview()
     assert app.result["ok"]
     assert app.result["changes"]
@@ -59,20 +59,18 @@ def test_capacity_edit_sorts_included_components_only(app, monkeypatch):
 def test_changed_source_cannot_export(app, monkeypatch, tmp_path):
     app.load_examples()
     app.preview()
-    assert app.result["ok"]
+    app.apply_preview()
     errors = []
-    monkeypatch.setattr("decap_manager.gui.filedialog.askdirectory", lambda **k: str(tmp_path))
-    monkeypatch.setattr("decap_manager.gui.fingerprint", lambda path: "changed")
+    monkeypatch.setattr("decap_manager.gui.filedialog.asksaveasfilename", lambda **k: str(tmp_path / "out.spd"))
+    monkeypatch.setattr("decap_manager.gui.save_spd", lambda *a, **k: (_ for _ in ()).throw(ValueError("원본 변경")))
     monkeypatch.setattr("decap_manager.gui.messagebox.showerror", lambda title, message, **k: errors.append(message))
     app.save()
-    assert app.result is None
     assert errors and "변경" in errors[0]
     assert not list(tmp_path.iterdir())
 
 
 def test_policy_only_priority_is_removed_when_disabled_or_deleted(app):
     app.load_examples()
-    app.mode.set("direct")
     app.rearrange.set(True)
     app.net_list.selection_set(0)
     target = "CAP_0603M_22UF"
@@ -101,6 +99,8 @@ def _shortage_setup(app):
     from decap_manager.engine import parse_capacitance
 
     app.load_examples()
+    # These recovery unit tests inject records; SPD compatibility is covered by workflow tests.
+    app.spd_layout.validate_records = lambda records: None
     components = ["CAP_10NF", "CAP_100NF", "CAP_1UF", "CAP_1UF", "CAP_4U7F", "CAP_1UF"]
     app.records = [dict(row=index + 2, refdes=f"C{index + 1}", net="OTHER" if index == 5 else "DEMO",
                         component=component, status="Automatic" if index == 4 else "Disabled",
@@ -109,7 +109,6 @@ def _shortage_setup(app):
     app.capacities = {component: parse_capacitance(component) for component in components}
     app.reset_priority()
     app.manual = [dict(net="DEMO", component="CAP_4U7F", expression="D+1", source="Synthetic direct command")]
-    app.mode.set("direct")
     return deepcopy(app.records)
 
 
@@ -140,7 +139,7 @@ def test_shortage_recovery_requires_approval_and_adds_only_used_rule(app, monkey
         assert app.records == original
         assert app.policies == []
         assert not app.use_policies.get()
-        assert "disabled" in app.save_button.state()
+        assert "disabled" in app.apply_button.state()
 
     prompts = _capture_recovery_prompt(monkeypatch, True, before_approval)
     app.preview()
@@ -157,7 +156,7 @@ def test_shortage_recovery_requires_approval_and_adds_only_used_rule(app, monkey
     assert [(change["refdes"], change["new_component"], change["new_status"]) for change in app.result["changes"]] == [("C4", "CAP_4U7F", "Automatic")]
     assert app.records == original
     assert app.result["records"][-1] == original[-1]
-    assert "disabled" not in app.save_button.state()
+    assert "disabled" not in app.apply_button.state()
 
 
 def test_declined_shortage_recovery_keeps_atomic_failure(app, monkeypatch):
@@ -170,7 +169,7 @@ def test_declined_shortage_recovery_keeps_atomic_failure(app, monkeypatch):
     assert app.result["changes"] == []
     assert app.policies == [] and not app.use_policies.get()
     assert "shortage" in {issue["code"] for issue in app.result["issues"]}
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
 
 
 @pytest.mark.parametrize("reason", ["ambiguous", "all_smaller_positions_active"])
@@ -191,7 +190,7 @@ def test_unusable_recovery_does_not_offer_success(app, monkeypatch, reason):
     assert not app.result["ok"]
     assert app.result["records"] == original == app.records
     assert not app.result["changes"] and not app.policies
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
     guidance = app.details.get("1.0", "end")
     if reason == "all_smaller_positions_active":
         assert "quantity_adjustment_cancelled" in {issue["code"] for issue in app.result["issues"]}
@@ -215,7 +214,7 @@ def test_recovery_preserves_and_runs_existing_active_custom_policy(app, monkeypa
     assert {change["refdes"] for change in app.result["changes"]} == {"C1", "C2", "C4"}
     assert app.records == original
     assert all(row["after_active"] == row["expected_active"] for row in app.result["summary"])
-    assert "disabled" not in app.save_button.state()
+    assert "disabled" not in app.apply_button.state()
 
 
 def test_disabled_custom_policy_is_never_automatically_enabled(app, monkeypatch):
@@ -229,7 +228,7 @@ def test_disabled_custom_policy_is_never_automatically_enabled(app, monkeypatch)
     assert not app.result["ok"]
     assert app.policies == [custom] and not app.use_policies.get()
     assert app.result["records"] == original == app.records
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
     assert "규칙" in app.details.get("1.0", "end")
 
 
@@ -246,7 +245,7 @@ def test_recovery_never_replaces_existing_target_policy(app, monkeypatch):
     assert app.policies == [custom] and app.use_policies.get()
     assert app.result["records"] == original == app.records
     assert not app.result["changes"]
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
 
 
 @pytest.mark.parametrize("can_compensate", [True, False])
@@ -268,7 +267,7 @@ def test_one_uf_recovery_checks_active_donor_compensation_before_offer(app, monk
     if not can_compensate:
         assert not prompts and not app.result["ok"]
         assert app.result["records"] == original and not app.result["changes"]
-        assert not app.policies and "disabled" in app.save_button.state()
+        assert not app.policies and "disabled" in app.apply_button.state()
         return
     assert len(prompts) == 1 and "보정" in prompts[0][1]
     assert app.result["ok"] and app.policies[0]["compensate"]
@@ -276,7 +275,7 @@ def test_one_uf_recovery_checks_active_donor_compensation_before_offer(app, monk
         ("conversion", "C7"), ("compensation", "C2")]
     donor_count = lambda rows: sum(row["net"] == "DEMO" and row["component"] == "CAP_100NF" and row["status"] == "Automatic" for row in rows)
     assert donor_count(app.result["records"]) == donor_count(original) == 1
-    assert "disabled" not in app.save_button.state()
+    assert "disabled" not in app.apply_button.state()
 
 
 def test_recovery_omits_commanded_rule_when_existing_positions_are_enough(app, monkeypatch):
@@ -346,7 +345,7 @@ def test_declining_cascade_keeps_all_intermediate_rules_unapplied(app, monkeypat
     assert not app.result["ok"] and not app.result["changes"]
     assert app.result["records"] == original == app.records
     assert not app.policies and not app.use_policies.get()
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
 
 
 def test_farthest_automatic_donor_precedes_nearer_disabled_and_compensates_far(app, monkeypatch):
@@ -384,51 +383,40 @@ def test_recommended_rules_are_adjacent_and_do_not_skip_ambiguous_capacity(app, 
     app.preview()
     assert not prompts and not app.result["ok"]
     assert not app.policies and not app.result["changes"]
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
 
 
 def _quantity_setup(app, tmp_path, nets=("DEMO",)):
     from copy import deepcopy
-    from openpyxl import Workbook
-    from decap_manager.excel_io import inspect_workbook
-
-    refdes = Workbook()
-    refdes.active.append(["Component", "RefDes", "Status", "NET"])
-    distance = Workbook()
-    distance.active.append(["RefDes", "NET", "Distance"])
+    from decap_manager.spd import read_spd
+    path = tmp_path / "synthetic.spd"
+    nodes, connections, references = [], [], []
     for site, net in enumerate(nets):
+        nodes.append(f"NodeD{site}::{{net}} X = 0um Y = 0um".replace("{net}", net))
+        references.append(f".Connect U{site} DEMO_DUT\n1 PK.NodeD{site}::{net}\n.EndC")
         for index, (component, status, value) in enumerate([
             ("CAP_100NF", "Automatic", 10), ("CAP_100NF", "Automatic", 20),
             ("CAP_100NF", "Disabled", 90), ("CAP_1UF", "Automatic", 30),
             ("CAP_1UF", "Automatic", 80), ("CAP_4U7F", "Automatic", 100),
         ], 1):
             name = f"C{site}_{index}"
-            refdes.active.append([component, name, status, net])
-            distance.active.append([name, net, value])
-    paths = {"refdes": tmp_path / "synthetic_refdes.xlsx", "distance": tmp_path / "synthetic_distance.xlsx"}
-    refdes.save(paths["refdes"])
-    distance.save(paths["distance"])
-    refdes.close()
-    distance.close()
-    app.paths = {kind: str(path) for kind, path in paths.items()}
-    app.mappings = {kind: inspect_workbook(path, kind)[0] for kind, path in paths.items()}
-    app.reload_records()
+            nodes.append(f"Node{name}::{net} X = {value}um Y = 0um Layer = Signal$TOP")
+            usage = " Usage = 0b111000" if status == "Disabled" else ""
+            connections.append(f".Connect {name} {component}{usage}\n1 PK.Node{name}::{net}\n.EndC")
+    parts = [f".Part {c} Outline = 600um 300um\n.EndPart\n.PartialCkt {c} ExtNode = 1\n* Capacitance : {v}[nF]\n.EndPartialCkt"
+             for c, v in (("CAP_100NF",100), ("CAP_1UF",1000), ("CAP_4U7F",4700))]
+    path.write_text("\n".join([*parts, ".Package PK", *nodes, ".EndPackage", *connections, *references, ""]), encoding="utf-8")
+    layout = read_spd(path)
+    app.load_layout(path, layout, "DEMO_DUT", [c for c in layout.components if c.startswith("CAP_")])
     app.manual = [dict(net=net, component="CAP_4U7F", expression="D+2", source="Synthetic quantity test") for net in nets]
-    app.mode.set("direct")
-    return deepcopy(app.records), deepcopy(app.manual), {path: path.read_bytes() for path in paths.values()}
+    return deepcopy(app.records), deepcopy(app.manual), {path: path.read_bytes()}
 
 
 def test_unknown_statuses_populate_components_nets_and_conversion_rules(app, tmp_path):
-    from openpyxl import load_workbook
-
     _quantity_setup(app, tmp_path, ("DEMO", "OTHER"))
-    workbook = load_workbook(app.paths["refdes"])
-    for row in range(2, workbook.active.max_row + 1):
-        workbook.active.cell(row, 3).value = ("unknown", "Enabled")[row % 2]
-    workbook.save(app.paths["refdes"])
-    workbook.close()
-
-    app.reload_records()
+    for index, row in enumerate(app.records):
+        row["status"] = ("unknown", "Enabled")[index % 2]
+    app.show_records(app.records)
     assert set(app.component_input["values"]) == {"CAP_100NF", "CAP_1UF", "CAP_4U7F"}
     assert set(app.net_list.get(0, "end")) == {"DEMO", "OTHER"}
     assert {row["status"] for row in app.records} == {"unknown", "Enabled"}
@@ -472,7 +460,7 @@ def test_quantity_choice_applies_only_to_current_preview(app, monkeypatch, tmp_p
             "command", reduced_refdes, "Disabled", "A")
     assert app.records == original and app.manual == manual
     assert all(path.read_bytes() == content for path, content in sources.items())
-    assert "disabled" not in app.save_button.state()
+    assert "disabled" not in app.apply_button.state()
     assert len(rule_prompts) == 1
     app.preview()
     assert app.result["ok"] and len(quantity_prompts) == 2
@@ -493,7 +481,7 @@ def test_quantity_cancellation_discards_every_preview_choice(app, monkeypatch, t
     assert app.result["records"] == original == app.records and app.manual == manual
     assert not app.policies and not app.use_policies.get()
     assert not any(issue["code"] == "quantity_adjustment" for issue in app.result["issues"])
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
     assert all(path.read_bytes() == content for path, content in sources.items())
 
 
@@ -507,7 +495,7 @@ def test_quantity_choice_does_not_approve_conversion_rules(app, monkeypatch, tmp
     assert not app.result["ok"] and not app.result["changes"]
     assert app.result["records"] == original == app.records and app.manual == manual
     assert not app.policies and not app.use_policies.get()
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
     assert all(not issue["applied"] for issue in app.result["issues"] if issue["code"] == "quantity_adjustment")
 
 
@@ -523,13 +511,13 @@ def test_quantity_flow_does_not_enable_disabled_saved_rules(app, monkeypatch, tm
     assert not rule_prompts and not app.result["ok"]
     assert app.policies == [saved] and not app.use_policies.get()
     assert app.result["records"] == original == app.records and app.manual == manual
-    assert "disabled" in app.save_button.state()
+    assert "disabled" in app.apply_button.state()
 
 
-def test_export_records_quantity_choice_in_audit_and_validation(app, monkeypatch, tmp_path):
-    import json
-    from openpyxl import Workbook, load_workbook
-    from decap_manager.excel_io import inspect_workbook
+def test_imported_quantity_choice_applies_to_spd_and_undo(app, monkeypatch, tmp_path):
+    from openpyxl import Workbook
+    from decap_manager.excel_io import inspect_workbook, read_commands
+    from decap_manager.spd import read_spd
     original, manual, sources = _quantity_setup(app, tmp_path)
     command_path = tmp_path / "synthetic_commands.xlsx"
     commands = Workbook()
@@ -537,26 +525,22 @@ def test_export_records_quantity_choice_in_audit_and_validation(app, monkeypatch
     commands.active.append(["DEMO", "CAP_4U7F", "D+2"])
     commands.save(command_path)
     commands.close()
-    app.paths["commands"] = str(command_path)
-    app.mappings["commands"] = inspect_workbook(command_path, "commands")[0]
-    app.reload_records()
-    app.mode.set("excel")
-    sources[command_path] = command_path.read_bytes()
+    app.manual = read_commands(command_path, inspect_workbook(command_path, "commands")[0])
+    app.invalidate()
     _capture_recovery_prompt(monkeypatch, True)
     expected = {"CAP_100NF": 1, "CAP_1UF": 2, "CAP_4U7F": 3}
     _quantity_dialog_stub(monkeypatch, lambda shortage, choices, _: _choice_with_counts(choices, expected))
     app.preview()
     assert app.result["ok"]
-    output = tmp_path / "exports"
-    monkeypatch.setattr("decap_manager.gui.filedialog.askdirectory", lambda **kwargs: str(output))
-    app.save()
-    directory = next(output.iterdir())
-    audit = json.loads((directory / "audit.json").read_text(encoding="utf-8"))
-    adjustment = next(issue for issue in audit["issues"] if issue["code"] == "quantity_adjustment")
+    adjustment = next(issue for issue in app.result["issues"] if issue["code"] == "quantity_adjustment")
     assert adjustment["applied"] and "A-1" in adjustment["message"]
-    workbook = load_workbook(directory / "validation.xlsx", read_only=True, data_only=False)
-    issue_rows = list(workbook["Issues"].iter_rows(min_row=2, values_only=True))
-    workbook.close()
-    assert any(row[1] == "quantity_adjustment" and row[2] == adjustment["message"] for row in issue_rows)
-    assert app.records == original and app.manual == manual
+    result = app.result["records"]
+    app.apply_preview()
+    assert app.records == result and not app.manual
+    output = tmp_path / "adjusted.spd"
+    monkeypatch.setattr("decap_manager.gui.filedialog.asksaveasfilename", lambda **kwargs: str(output))
+    app.save()
+    assert read_spd(output).records(*app.spd_selection) == app.records
+    app.undo()
+    assert app.records == original and app.manual
     assert all(path.read_bytes() == content for path, content in sources.items())
