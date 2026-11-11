@@ -21,6 +21,8 @@ _CONNECT_FIELDS = re.compile(
 _USAGE_VALUE = re.compile(rb"\s*(" + _QUOTED + rb"""|[^\s'"=]+)(?=\s|$)""")
 _STATUS_TO_USAGE = {"Automatic": None, "Enabled": b"0b1000", "Disabled": b"0b111000"}
 _USAGE_TO_STATUS = {token: status for status, token in _STATUS_TO_USAGE.items()}
+# Statuses save_spd can write to any component; other source values stay on their own line.
+WRITABLE_STATUSES = tuple(_STATUS_TO_USAGE)
 _ATTRIBUTE = re.compile(rb"^[a-z][a-z0-9_]*\s*=", re.I)
 _CONNECT = re.compile(rb"^\.Connect[ \t]+\S+[ \t]+(\S+)", re.I)
 _NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?"

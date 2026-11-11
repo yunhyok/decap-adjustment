@@ -6,7 +6,7 @@ import re
 import tkinter as tk
 from tkinter import font, ttk
 
-from .engine import effective_status, parse_capacitance
+from .engine import effective_status, format_capacitance, parse_capacitance
 
 
 _BG = "#202226"
@@ -25,6 +25,10 @@ _SIDES = ("Top", "Bottom", "Unknown")
 _PACKAGE = re.compile(r"(?:^|[_ -])CAP[_ -]+(\d{4}M?)(?=[_ -]|$)", re.I)
 _CAPACITY_TERM = re.compile(r"(?<!\S)\d+(?:\.\d+)?(?:\s*[pnum]\d*)?\s*f(?!\S)")
 _CTRL = 0x0004
+_COLUMNS = ("refdes", "channel", "site", "net", "distance", "size", "capacity", "status", "source", "component")
+_LABELS = dict(refdes="RefDes", channel="채널", site="사이트", net="NET", distance="거리 (µm)", size="크기",
+               capacity="용량", status="상태", source="출처", component="부품명")
+_NATURAL = re.compile(r"(\d+)")
 
 
 def _point(x, y):
@@ -54,11 +58,13 @@ def _placement(metadata):
 
 
 def _capacity_text(value):
-    if value is None:
-        return ""
-    for unit, factor in (("mF", 1e9), ("µF", 1e6), ("nF", 1e3), ("pF", 1)):
-        if value >= factor or unit == "pF":
-            return f"{value / factor:g} {unit}"
+    return format_capacitance(value)
+
+
+def _natural(text):
+    """Sort C2 before C10."""
+    # isdecimal, not isdigit: "²" is a digit that int() cannot read.
+    return [(0, int(part), "") if part.isdecimal() else (1, 0, part.casefold()) for part in _NATURAL.split(str(text))]
 
 
 def _search_text(value):
@@ -82,6 +88,8 @@ class BoardView(ttk.Frame):
         self._selected = set()
         self._counts = Counter()
         self._items, self._centers = {}, {}
+        self._sort = None
+        self._reference_pins = 0
         self._scale = self._fit_scale = 1.0
         self._offset = (0, 0)
         self._viewport_size = (0, 0)
@@ -115,6 +123,15 @@ class BoardView(ttk.Frame):
         self.mirror_button.pack(side="left", padx=6)
         self._button(toolbar, "화면 맞춤", self.fit).pack(side="right")
 
+        # Packed before the panes: a short window shrinks the drawing, never the action bar.
+        actions = tk.Frame(self, background=_PANEL, padx=8, pady=5)
+        actions.pack(side="bottom", fill="x", pady=(6, 0))
+        tk.Label(actions, textvariable=self.counts, background=_PANEL, foreground=_TEXT).pack(side="left")
+        self.disable_button = self._button(actions, "선택 비활성화", lambda: self._apply("Disabled"))
+        self.disable_button.pack(side="right")
+        self.activate_button = self._button(actions, "선택 활성화", lambda: self._apply("Automatic"), primary=True)
+        self.activate_button.pack(side="right", padx=(0, 6))
+
         panes = tk.PanedWindow(
             self, orient="vertical", background=_BG, sashwidth=8, sashrelief="raised", borderwidth=0,
         )
@@ -123,14 +140,27 @@ class BoardView(ttk.Frame):
         table = tk.Frame(panes, background=_PANEL, padx=8, pady=6)
         panes.add(drawing, minsize=120, stretch="always")
         panes.add(table, minsize=135, stretch="never")
+
+        def share():
+            # On a short window the list would squeeze the drawing to its minimum; start
+            # with at least half for the drawing. Afterwards the user's sash position rules.
+            height = panes.winfo_height()
+            if height > 1 and panes.sash_coord(0)[1] < height * 0.5:
+                panes.sash_place(0, 0, round(height * 0.5))
+
+        def first_layout(_event):
+            panes.unbind("<Configure>")
+            panes.after_idle(share)
+
+        panes.bind("<Configure>", first_layout)
         self.canvas = tk.Canvas(
-            drawing, background=_CANVAS, height=300, width=1, borderwidth=0, takefocus=True,
+            drawing, background=_CANVAS, height=150, width=1, borderwidth=0, takefocus=True,
             highlightthickness=1, highlightbackground=_BORDER, highlightcolor=_FOCUS,
         )
-        self.canvas.pack(fill="both", expand=True)
         hint = tk.Frame(drawing, background=_BG)
-        hint.pack(fill="x", pady=(3, 0))
-        tk.Label(hint, text="클릭·드래그 선택   ·   Ctrl 다중 선택   ·   휠 확대/축소   ·   중간/오른쪽 드래그 이동",
+        hint.pack(side="bottom", fill="x", pady=(3, 0))
+        self.canvas.pack(fill="both", expand=True)
+        tk.Label(hint, text="클릭·드래그 선택   ·   Ctrl 다중 선택   ·   휠 확대/축소   ·   오른쪽/가운데 드래그 이동   ·   표 더블클릭: 위치로 이동",
                  background=_BG, foreground=_MUTED).pack(side="left")
         for text, color in (("▪ 기준 핀", "#9eaac0"), ("○ 비활성", _DISABLED), ("● 활성", _ACTIVE)):
             tk.Label(hint, text=text, background=_BG, foreground=color).pack(side="right", padx=(6, 0))
@@ -165,16 +195,17 @@ class BoardView(ttk.Frame):
         list_box.pack(fill="both", expand=True)
         list_box.columnconfigure(0, weight=1)
         list_box.rowconfigure(0, weight=1)
-        columns = ("refdes", "channel", "site", "net", "size", "capacity", "status", "source", "component")
         self.tree = ttk.Treeview(
-            list_box, columns=columns, show="headings", selectmode="extended",
-            height=5, style="DecapBoard.Treeview",
+            list_box, columns=_COLUMNS, show="headings", selectmode="extended",
+            height=4, style="DecapBoard.Treeview",
         )
-        labels = ("RefDes", "채널", "사이트", "NET", "크기", "용량", "상태", "출처", "부품명")
-        widths = (76, 108, 70, 150, 70, 79, 93, 88, 185)
-        for key, label, width in zip(columns, labels, widths):
-            anchor = "w" if key in ("refdes", "channel", "net", "component") else "center"
-            self.tree.heading(key, text=label, anchor=anchor)
+        scale = max(1.0, self.winfo_fpixels("1i") / 96)
+        widths = dict(refdes=76, channel=108, site=70, net=150, distance=96, size=70, capacity=79, status=93,
+                      source=96, component=185)
+        for key in _COLUMNS:
+            anchor = "w" if key in ("refdes", "channel", "net", "component") else "e" if key == "distance" else "center"
+            self.tree.heading(key, text=_LABELS[key], anchor=anchor, command=lambda column=key: self._sort_by(column))
+            width = round(widths[key] * scale)
             self.tree.column(key, width=width, minwidth=width, anchor=anchor, stretch=key in ("net", "component"))
         self.tree.grid(row=0, column=0, sticky="nsew")
         for direction, axis, command, grid in (
@@ -189,14 +220,10 @@ class BoardView(ttk.Frame):
             self.tree.configure(**{f"{axis}scrollcommand": bar.set})
         self.tree.bind("<<TreeviewSelect>>", self._tree_selected)
         self.tree.bind("<Escape>", self._clear_selection)
+        self.tree.bind("<Double-1>", self._locate)
+        for key in "aA":
+            self.tree.bind(f"<Control-{key}>", self._select_all)
 
-        actions = tk.Frame(self, background=_PANEL, padx=8, pady=5)
-        actions.pack(fill="x", pady=(6, 0))
-        tk.Label(actions, textvariable=self.counts, background=_PANEL, foreground=_TEXT).pack(side="left")
-        self.disable_button = self._button(actions, "선택 비활성화", lambda: self._apply("Disabled"))
-        self.disable_button.pack(side="right")
-        self.activate_button = self._button(actions, "선택 활성화", lambda: self._apply("Automatic"), primary=True)
-        self.activate_button.pack(side="right", padx=(0, 6))
 
     @staticmethod
     def _button(parent, label, command, primary=False):
@@ -251,15 +278,19 @@ class BoardView(ttk.Frame):
             capacitance = record["capacitance_pf"] if "capacitance_pf" in record else parse_capacitance(component)
             if type(capacitance) not in (int, float) or not math.isfinite(capacitance) or capacitance <= 0:
                 capacitance = None
-            fields = (
-                ref, record.get("channel") or metadata.get("channel"), record.get("site") or metadata.get("site"),
-                record.get("net"), size, _capacity_text(capacitance), effective_status(record),
-                record.get("metadata_source"), component,
-            )
+            distance = record.get("distance")
+            if type(distance) not in (int, float) or not math.isfinite(distance):
+                distance = None
+            searched = (ref, record.get("channel") or metadata.get("channel"), record.get("site") or metadata.get("site"),
+                        record.get("net"), size, _capacity_text(capacitance))
+            fields = (*searched[:4], None if distance is None else f"{distance:,.1f}", *searched[4:],
+                      effective_status(record), record.get("metadata_source"), component)
             self._values[ref] = tuple(value if value not in ("", None) else "—" for value in fields)
-            self._searchable[ref] = (_search_text(" ".join(str(value) for value in fields[:6] if value is not None)),
-                                     capacitance)
+            self._searchable[ref] = (_search_text(" ".join(str(value) for value in searched if value is not None)),
+                                     capacitance, distance)
         self._counts = Counter(locations[ref][0] for ref in records)
+        self._reference_pins = sum(len(pins) or 1 for ref, (_, center, pins, _) in locations.items()
+                                   if ref not in records and center is not None)
         for side, button in self.side_buttons.items():
             button.configure(text=f"{side}  {self._counts[side]}")
         if new_layout:
@@ -281,10 +312,12 @@ class BoardView(ttk.Frame):
         side = self.side.get()
         self.mirror_button.configure(state="normal" if side == "Bottom" else "disabled")
         visible = {
-            ref: self._values[ref] for ref, (text, capacity) in self._searchable.items()
+            ref: self._values[ref] for ref, (text, capacity, _) in self._searchable.items()
             if self._locations[ref][0] == side and all(term in text for term in terms)
             and all(term is not None and capacity is not None and math.isclose(term, capacity) for term in capacity_terms)
         }
+        if self._sort:
+            visible = {ref: visible[ref] for ref in self._sorted(visible)}
         removed = self._visible.keys() - visible.keys()
         if removed:
             self.tree.delete(*removed)
@@ -325,6 +358,52 @@ class BoardView(ttk.Frame):
                                       background="#3b414b" if can_disable else _INPUT)
         self._queue_draw()
 
+    def _sorted(self, refs):
+        """Order rows by the chosen heading; rows without a value stay at the end."""
+        column, descending = self._sort
+        if column in ("distance", "capacity"):
+            index = 2 if column == "distance" else 1
+            key = lambda ref: self._searchable[ref][index]
+            present = [ref for ref in refs if key(ref) is not None]
+        else:
+            index = _COLUMNS.index(column)
+            key = lambda ref: _natural(self._values[ref][index])
+            present = [ref for ref in refs if self._values[ref][index] != "—"]
+        kept = set(present)
+        missing = [ref for ref in refs if ref not in kept]
+        return sorted(present, key=key, reverse=descending) + missing
+
+    def _sort_by(self, column):
+        """Heading click cycles ascending → descending → original SPD order."""
+        if self._sort is None or self._sort[0] != column:
+            self._sort = (column, False)
+        elif not self._sort[1]:
+            self._sort = (column, True)
+        else:
+            self._sort = None
+        for key in _COLUMNS:
+            mark = ""
+            if self._sort and self._sort[0] == key:
+                mark = " ▼" if self._sort[1] else " ▲"
+            self.tree.heading(key, text=_LABELS[key] + mark)
+        self._refresh()
+
+    def _select_all(self, _event=None):
+        self._select(set(self._visible))
+        return "break"
+
+    def _locate(self, event):
+        """Centre the drawing on the double-clicked row, zooming in when the view is far out."""
+        ref = self.tree.identify_row(event.y)
+        location = self._locations.get(ref)
+        if not ref or location is None or location[1] is None or self._fit_pending:
+            return
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self._scale = min(self._fit_scale * 256, max(self._scale, self._fit_scale * 6))
+        self._offset = (width / 2 - location[1][0] * self._scale * self._x_direction(),
+                        height / 2 + location[1][1] * self._scale)
+        self._queue_draw()
+
     def _tree_selected(self, _event):
         refs = set(self.tree.selection())
         if refs != self._selected:
@@ -347,9 +426,10 @@ class BoardView(ttk.Frame):
         return -1 if self.side.get() == "Bottom" and self.mirror.get() else 1
 
     def _placements_on_screen(self):
+        """Visible decaps of the chosen side, plus the reference pads as context on every side."""
         side = self.side.get()
         return ((ref, center, pins, body) for ref, (face, center, pins, body) in self._locations.items()
-                if face == side and center is not None and (ref in self._visible or ref not in self._records))
+                if center is not None and (ref not in self._records or (face == side and ref in self._visible)))
 
     def fit(self):
         self._fit_pending = True
@@ -404,23 +484,27 @@ class BoardView(ttk.Frame):
         scale = self._scale
         xscale = scale * self._x_direction()
         placements = list(self._placements_on_screen())
-        # Reference pads sit behind the selectable decaps.
-        placements.sort(key=lambda placement: placement[0] in self._records)
+        # Reference pads sit behind the selectable decaps; the selection is drawn last, on top.
+        placements.sort(key=lambda placement: (placement[0] in self._records, placement[0] in self._selected))
+        # Few or magnified reference pads are drawn larger so a small reference stays visible.
+        pad = 2 if self._reference_pins <= 600 or scale >= self._fit_scale * 4 else 1
+        decaps = 0
         for ref, center, pins, body in placements:
             x, y = center[0] * xscale + dx, dy - center[1] * scale
             projected = tuple((px * xscale + dx, dy - py * scale) for px, py in pins)
             if ref not in self._records:
                 for px, py in projected or ((x, y),):
                     if -2 <= px <= width + 2 and -2 <= py <= height + 2:
-                        canvas.create_rectangle(px - 1, py - 1, px + 1, py + 1, fill="#7c899f",
+                        canvas.create_rectangle(px - pad, py - pad, px + pad, py + pad, fill="#7c899f",
                                                 width=0, tags="board")
                 continue
+            decaps += 1
             outline = tuple((px * xscale + dx, dy - py * scale) for px, py in body)
             xs, ys = zip((x, y), *projected, *outline)
             if max(xs) < -16 or min(xs) > width + 16 or max(ys) < -16 or min(ys) > height + 16:
                 continue
             self._draw_decap(ref, x, y, projected, outline)
-        if not placements:
+        if not decaps:
             message = ("SPD를 불러오고 기준 부품과 대상 디캡을 지정하세요." if not self._records else
                        "표시할 좌표가 없습니다. 아래 목록에서 RefDes를 확인하세요." if self._visible else
                        "이 면과 검색 조건에 맞는 디캡이 없습니다.")

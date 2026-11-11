@@ -72,7 +72,7 @@ def shortage_choices(records, commands, shortage, *, policies, aliases=None):
                           strategy=strategy, delta=-deficit,
                           requested_active_before=shortage["requested_active"],
                           requested_active_after=shortage["requested_active"] - deficit)
-        choices.append(dict(label=label, description=message + " 원본 명령 파일은 변경하지 않습니다.",
+        choices.append(dict(label=label, description=message + " 명령 목록 자체는 변경하지 않습니다.",
                             commands=candidate, adjustment=adjustment,
                             summary=[s for s in result["summary"] if s["net"] == net]))
 

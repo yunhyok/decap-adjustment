@@ -49,7 +49,7 @@ def test_capacity_edit_sorts_included_components_only(app, monkeypatch):
     app.priority_table.selection_set(second)
     app.exclude_priority()
     app.priority_table.selection_set(first)
-    monkeypatch.setattr("decap_manager.gui.simpledialog.askfloat", lambda *a, **k: 100000000)
+    monkeypatch.setattr("decap_manager.gui.ask_text", lambda *a, **k: 100000000.0)
     app.edit_capacity()
     values = [app.priority_table.item(i, "values")[0] for i in app.priority_table.get_children()]
     assert excluded not in values
